@@ -44,7 +44,7 @@ app.post('/api/login', (req, res) => {
 });
 app.post('/api/logout', (req, res) => { res.clearCookie(AUTH_COOKIE); res.json({ ok: true }); });
 const authed = (req) => !APP_PASSWORD || req.cookies[AUTH_COOKIE] === authToken();
-app.get('/api/config', (req, res) => res.json({ passwordRequired: !!APP_PASSWORD, authed: authed(req) }));
+app.get('/api/config', (req, res) => res.json({ passwordRequired: !!APP_PASSWORD, authed: authed(req), durableStorage: storage.durable() }));
 
 // Signed media links, so providers (fal, Claude vision) can fetch our files without logging in.
 app.get('/m/:id', wrap(async (req, res) => {
@@ -75,12 +75,13 @@ app.get('/api/catalog', (req, res) => res.json({
 
 // ------------------------------------------------------------------ projects
 const INTAKE_FIELDS = ['title', 'concept', 'message', 'constraints', 'format', 'runtime', 'genre', 'references', 'rating', 'look', 'aspect',
-  'languages', 'subtitle_languages', 'likeness', 'your_name', 'your_description', 'omega_album'];
+  'languages', 'subtitle_languages', 'dub_languages', 'likeness', 'your_name', 'your_age', 'your_description', 'omega_album'];
 function cleanIntake(b) {
   const out = {};
   for (const k of INTAKE_FIELDS) if (b[k] !== undefined && b[k] !== null && b[k] !== '') out[k] = typeof b[k] === 'string' ? b[k].slice(0, 40000) : b[k];
   if (!out.concept || String(out.concept).trim().length < 10) throw bad('Write the concept (at least a sentence)');
-  if (typeof out.subtitle_languages === 'string') out.subtitle_languages = out.subtitle_languages.split(',').map((s) => s.trim()).filter(Boolean);
+  for (const k of ['subtitle_languages', 'dub_languages']) if (typeof out[k] === 'string') out[k] = out[k].split(',').map((s) => s.trim()).filter(Boolean);
+  if (out.your_age !== undefined) out.your_age = Math.max(0, Math.min(120, Number(out.your_age) || 0)) || undefined;
   if (!['none', 'cameo', 'supporting', 'lead'].includes(out.likeness)) out.likeness = 'none';
   return out;
 }
@@ -130,6 +131,7 @@ app.patch('/api/projects/:id', wrap(async (req, res) => {
 app.delete('/api/projects/:id', wrap(async (req, res) => {
   await query('DELETE FROM projects WHERE id=$1', [req.params.id]);
   fs.rmSync(path.join(storage.MEDIA_DIR, `p${Number(req.params.id)}`), { recursive: true, force: true });
+  await storage.s3DeletePrefix(`p${Number(req.params.id)}/`).catch((e) => console.error('bucket cleanup', e.message));
   res.json({ ok: true });
 }));
 
@@ -179,6 +181,25 @@ app.post('/api/projects/:id/steps/:step/restore/:version', wrap(async (req, res)
   await pipeline.approve(Number(req.params.id), def.id, v.output, 'you');
   setImmediate(worker.tick);
   res.json({ ok: true });
+}));
+
+// Slots a step expects you might fill with your own file (shown even before anything exists).
+app.get('/api/projects/:id/steps/:step/slots', wrap(async (req, res) => {
+  const def = stepOf(req);
+  const p = await pipeline.getProject(req.params.id);
+  const ctx = await pipeline.makeCtx(p, def.id);
+  const slots = [];
+  if (def.id === 'T22' && ctx.get('T16') && ctx.get('T10')) {
+    const mine = Object.entries(ctx.get('T10').cast).filter(([, v]) => v.performer === 'you').map(([id]) => id);
+    for (const sh of ctx.get('T16').shots.filter((s) => ctx.inScope(s.scene) && s.characters.some((c) => mine.includes(c)))) {
+      slots.push({ ref: `perf:${sh.id}`, label: `${sh.id}: ${sh.action}`, hint: 'Film yourself acting this shot (video). Your movement and timing drive your character when a motion model is set.' });
+    }
+  }
+  const step = (await pipeline.stepRows(p.id))[def.id];
+  const src = step.output || step.draft || step.progress || {};
+  if (def.id === 'T29') for (const c of src.cues || []) slots.push({ ref: `cue:${c.id}`, label: `${c.id} (${c.start}–${c.end} s): ${c.brief}`, hint: 'Upload a cue to use instead of Omega.' });
+  if (def.id === 'T30') for (const sg of src.songs || []) slots.push({ ref: `song:${sg.id}`, label: `${sg.title} (scene ${sg.scene})`, hint: 'Upload a song from your library.' });
+  res.json(slots);
 }));
 
 // ------------------------------------------------------------------ assets

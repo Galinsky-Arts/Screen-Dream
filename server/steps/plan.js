@@ -78,6 +78,7 @@ const T5 = {
     const done = (ctx.progress && ctx.progress.scenes) || [];
     const groups = chunk(outline.scenes.filter((s) => !done.find((d) => d.n === s.n)), 4);
     for (const g of groups) {
+      await ctx.status(`Writing scenes ${g.map((x) => x.n).join(', ')} (${done.length}/${outline.scenes.length} done)`);
       const prev = done.slice(-2).map((s) => s.fountain).join('\n\n');
       const d = await ctx.claude('Screenwriter', `${ctx.brief()}
 Treatment:
@@ -205,6 +206,12 @@ Pick the one character the producer should play, preferring sizes ${sizes.join('
       if (scope.roles && !scope.roles.includes(c.size)) problems.push(`${c.name} is a ${c.size} role; your consent covers ${scope.roles.join(', ')}.`);
       if (c.dies_on_screen && scope.death_depiction === 'ask') await ctx.ask(consent.id, `Show your character ${c.name}'s death on screen?`);
       if (c.dies_on_screen && scope.death_depiction === 'no') problems.push(`${c.name} dies on screen; your consent says no.`);
+      const yours = Number(ctx.intake.your_age);
+      const theirs = Number(String(c.age).match(/\d+/) || NaN);
+      if (yours && theirs && Math.abs(yours - theirs) >= 10 && scope.age_shift !== 'yes') {
+        if (scope.age_shift === 'no') problems.push(`${c.name} is ${theirs}; you are ${yours}, and your consent says no age-shifting.`);
+        else await ctx.ask(consent.id, `Make you look ${theirs > yours ? 'older' : 'younger'} (about ${theirs}) to play ${c.name}?`);
+      }
     }
     const captures = await ctx.assets('capture:');
     if (captures.filter((a) => a.kind === 'image').length < 3) problems.push('Upload at least 3 capture photos of yourself (front, three-quarter, profile) on the Consent page.');
@@ -231,14 +238,15 @@ const T9 = {
     const chars = ctx.get('T8').characters.filter((c) => c.size !== 'extra');
     const cast = ctx.get('T10').cast;
     const look = ctx.get('T15');
-    const n = ctx.manual ? 4 : ctx.tier === 'premium' ? 2 : 1;
     const designs = {};
-    for (const c of chars) {
+    let finished = 0;
+    await ctx.pool(chars, async (c) => {
+      const n = ctx.itemManual(c.id) ? 4 : ctx.tier === 'premium' ? 2 : 1;
       const ref = `char:${c.id}`;
       if (cast[c.id] && cast[c.id].performer === 'you') {
         const cap = (await ctx.assets('capture:')).find((a) => a.kind === 'image');
         designs[c.id] = cap ? cap.id : null;
-        continue;
+        return;
       }
       let have = await ctx.assets(ref);
       for (let tries = 0; have.length < n && tries < n + 3; tries++) {
@@ -252,7 +260,8 @@ const T9 = {
       const chosen = have.find((a) => a.chosen) || have[0];
       if (chosen && !ctx.manual) await ctx.choose(chosen.id);
       designs[c.id] = chosen ? chosen.id : null;
-    }
+      await ctx.status(`Designed ${++finished}/${chars.length} roles`);
+    });
     return { output: { designs } };
   },
 };
@@ -322,13 +331,13 @@ Design every location as a reusable set: id (slug), name, a precise visual descr
       await ctx.save({ sets });
     }
     const look = ctx.get('T15');
-    for (const s of sets) {
-      if ((await ctx.assets(`set:${s.id}`)).length) continue;
+    await ctx.pool(sets, async (s) => {
+      if ((await ctx.assets(`set:${s.id}`)).length) return;
       const prompt = `Wide establishing film still of an empty set, no people. ${s.name}: ${s.description}. ${look ? look.style_prompt : ''}`;
       const r = await fal.image(prompt, { aspect: ctx.aspect() });
       const a = await ctx.asset({ ref: `set:${s.id}`, kind: 'image', url: r.url, provider: 'fal', model: r.model, prompt, cost: r.cost });
       await ctx.choose(a.id);
-    }
+    });
     return { output: { sets } };
   },
 };
@@ -347,13 +356,13 @@ List the hero props (props the story depends on or that are seen in close-up), a
       props = d.props.map((p) => ({ ...p, id: slug(p.id || p.name) }));
       await ctx.save({ props });
     }
-    for (const p of props.slice(0, 15)) {
-      if ((await ctx.assets(`prop:${p.id}`)).length) continue;
+    await ctx.pool(props.slice(0, 15), async (p) => {
+      if ((await ctx.assets(`prop:${p.id}`)).length) return;
       const prompt = `Product-style film prop reference photo on a neutral background: ${p.name}. ${p.description}`;
       const r = await fal.image(prompt, { aspect: '1:1' });
       const a = await ctx.asset({ ref: `prop:${p.id}`, kind: 'image', url: r.url, provider: 'fal', model: r.model, prompt, cost: r.cost });
       await ctx.choose(a.id);
-    }
+    });
     return { output: { props } };
   },
 };
@@ -379,6 +388,7 @@ const T16 = {
     const shots = (ctx.progress && ctx.progress.shots) || [];
     const doneScenes = new Set(shots.map((s) => s.scene));
     for (const g of chunk(script.scenes.filter((s) => !doneScenes.has(s.n)), 3)) {
+      await ctx.status(`Shot list for scenes ${g.map((x) => x.n).join(', ')} (${shots.length} shots so far)`);
       const d = await ctx.claude('Director (shot list)', `${ctx.brief()}
 Characters (use these ids): ${chars.map((c) => `${c.id}=${c.name}`).join(', ')}
 Sets (use these ids): ${sets.map((s) => `${s.id}=${s.name}`).join(', ')}
@@ -403,14 +413,16 @@ const T17 = {
     const { shots } = ctx.get('T16');
     const look = ctx.get('T15');
     const chars = Object.fromEntries(ctx.get('T8').characters.map((c) => [c.id, c]));
-    for (const sh of shots) {
-      if ((await ctx.assets(`board:${sh.id}`)).length) continue;
+    let n = 0;
+    await ctx.pool(shots, async (sh) => {
+      if ((await ctx.assets(`board:${sh.id}`)).length) return;
       const who = sh.characters.map((id) => chars[id] ? `${chars[id].name} (${chars[id].look})` : id).join('; ');
       const prompt = `Storyboard frame, cinematic, ${sh.size}, ${sh.lens} lens. ${sh.action}. ${who ? `In frame: ${who}.` : ''} ${look.style_prompt}`;
       const r = await fal.image(prompt.slice(0, 1800), { aspect: ctx.aspect(), draft: true });
       const a = await ctx.asset({ ref: `board:${sh.id}`, kind: 'image', url: r.url, provider: 'fal', model: r.model, prompt, cost: r.cost });
       await ctx.choose(a.id);
-    }
+      if (++n % 5 === 0) await ctx.status(`Storyboards: ${n}/${shots.length}`);
+    });
     return { output: { boards: shots.length } };
   },
 };

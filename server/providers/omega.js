@@ -58,4 +58,10 @@ async function album(id) {
   return r.json();
 }
 
-module.exports = { make, downloadTo, album, base: BASE };
+// A new Final Cut release in Omega holding these songs (the film's soundtrack album).
+async function release({ title, artist, songIds }) {
+  const r = await api('/api/releases', { method: 'POST', body: JSON.stringify({ title: title.slice(0, 200), artist, release_type: 'album', songIds }) });
+  return r.json();
+}
+
+module.exports = { make, downloadTo, album, release, base: BASE };

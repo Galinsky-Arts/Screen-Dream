@@ -15,6 +15,9 @@ const MODELS = {
   video: process.env.FAL_VIDEO_MODEL || 'fal-ai/kling-video/v2.1/standard/image-to-video',
   lipsync: process.env.FAL_LIPSYNC_MODEL || 'fal-ai/sync-lipsync',
   upscale: process.env.FAL_UPSCALE_MODEL || '',
+  // Motion transfer: your phone performance drives the shot. Off until a model id is set, because
+  // input names differ between models; the adapter sends video_url + image_url + prompt.
+  motion: process.env.FAL_MOTION_MODEL || '',
 };
 
 // Estimated USD per call (per 5 s for video, per second of audio for lip sync). Rough planning
@@ -26,6 +29,7 @@ const PRICE = {
   video5s: Number(process.env.FAL_PRICE_VIDEO_5S || 0.3),
   lipsyncPerSec: Number(process.env.FAL_PRICE_LIPSYNC_SEC || 0.05),
   upscale: Number(process.env.FAL_PRICE_UPSCALE || 0.1),
+  motion: Number(process.env.FAL_PRICE_MOTION || 0.5),
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -93,4 +97,9 @@ async function upscale(videoUrlIn) {
   return { url: videoUrl(out), model: MODELS.upscale, cost: PRICE.upscale };
 }
 
-module.exports = { run, image, reference, video, lipsync, upscale, MODELS, PRICE };
+async function motion(performanceUrl, imageUrl, prompt) {
+  const out = await run(MODELS.motion, { video_url: performanceUrl, image_url: imageUrl, prompt });
+  return { url: videoUrl(out), model: MODELS.motion, cost: PRICE.motion };
+}
+
+module.exports = { motion, run, image, reference, video, lipsync, upscale, MODELS, PRICE };

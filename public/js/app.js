@@ -90,10 +90,12 @@ async function newFilm() {
       <label class="field"><span>Look</span><input id="f_look" placeholder="photoreal, 35mm grain…"></label>
       <label class="field"><span>Aspect ratio</span><select id="f_aspect"><option>2.39:1</option><option>1.85:1</option><option>16:9</option><option>9:16</option></select></label>
       <label class="field"><span>Subtitle languages</span><input id="f_subtitle_languages" value="English, Spanish, French, German, Japanese"></label>
+      <label class="field"><span>Dub languages (dialogue re-voiced)</span><input id="f_dub_languages" placeholder="Spanish, French"></label>
     </div>
     <div class="grid3">
       <label class="field"><span>Your likeness</span><select id="f_likeness"><option value="none">I'm not in it</option><option value="cameo">Cameo</option><option value="supporting">Supporting role</option><option value="lead">Lead</option></select></label>
       <label class="field"><span>Your name (for credits)</span><input id="f_your_name"></label>
+      <label class="field"><span>Your age (for age-shift consent)</span><input id="f_your_age" type="number" min="1" max="120"></label>
       <label class="field"><span>Your description (for casting)</span><input id="f_your_description"></label>
     </div>
   </div>
@@ -139,8 +141,9 @@ async function newFilm() {
   $('#start').onclick = guard(async () => {
     const v = (id) => $(id).value.trim();
     const intake = {};
-    ['concept', 'message', 'constraints', 'title', 'format', 'runtime', 'genre', 'references', 'rating', 'look', 'aspect', 'likeness', 'your_name', 'your_description'].forEach((k) => { intake[k] = v(`#f_${k}`); });
+    ['concept', 'message', 'constraints', 'title', 'format', 'runtime', 'genre', 'references', 'rating', 'look', 'aspect', 'likeness', 'your_name', 'your_age', 'your_description', 'dub_languages'].forEach((k) => { intake[k] = v(`#f_${k}`); });
     intake.runtime = intake.runtime ? Number(intake.runtime) : '';
+    intake.dub_languages = intake.dub_languages.split(',').map((x) => x.trim()).filter(Boolean);
     intake.subtitle_languages = v('#f_subtitle_languages').split(',').map((x) => x.trim()).filter(Boolean);
     if ($('#omegaId').value.trim()) intake.omega_album = $('#omegaId').value.trim();
     policy.tier = v('#g_tier'); policy.scope = v('#g_scope'); policy.maxScenes = v('#g_max') ? Number(v('#g_max')) : null;
@@ -171,7 +174,9 @@ async function project(id) {
       ${steps.T36.status === 'done' ? `<div class="card screen" style="margin:16px 0"><h3>The film</h3><video controls src="/api/assets/${steps.T36.output.master}/file"></video>
         <div class="row" style="margin-top:10px"><a class="btn sm" href="/api/assets/${steps.T36.output.master}/file?download=1">Download master</a><a class="btn sm" href="/api/assets/${steps.T36.output.vertical}/file?download=1">Vertical edition</a>
         ${Object.entries(steps.T36.output.subtitles || {}).map(([l, a]) => `<a class="btn sm" href="/api/assets/${a}/file?download=1">${esc(l)} subtitles</a>`).join('')}
+        ${Object.entries(steps.T36.output.dubs || {}).map(([l, a]) => `<a class="btn sm" href="/api/assets/${a}/file?download=1">${esc(l)} dub</a>`).join('')}
         ${steps.T35.status === 'done' ? `<a class="btn sm" href="/api/assets/${steps.T35.output.trailer}/file?download=1">Trailer</a><a class="btn sm" href="/api/assets/${steps.T35.output.poster}/file?download=1">Poster</a>` : ''}</div></div>` : ''}
+      ${steps.T37.status === 'done' && steps.T37.output.soundtrack ? `<div class="note">${steps.T37.output.soundtrack.releaseId ? `Soundtrack album created in Instrument Omega (release ${steps.T37.output.soundtrack.releaseId}, ${steps.T37.output.soundtrack.tracks} tracks).` : esc(steps.T37.output.soundtrack.error || '')}</div>` : ''}
       ${todo.length || asks.length ? `<div class="card todo" style="margin:16px 0"><b>Waiting for you</b><ul>
         ${asks.map((a) => `<li>${esc(a.question)} <button class="btn sm" data-ask="${a.id}" data-a="yes">Yes</button> <button class="btn sm" data-ask="${a.id}" data-a="no">No</button></li>`).join('')}
         ${todo.map((s) => `<li><a class="link" href="#/p/${id}/s/${s.step_id}">${s.step_id} ${esc(catalog.steps.find((x) => x.id === s.step_id).name)}</a> ${pill(s.status)} <span class="muted small">${esc(s.note || '')}</span></li>`).join('')}</ul></div>` : ''}
@@ -206,8 +211,8 @@ async function project(id) {
 }
 
 // ------------------------------------------------------------------ one step
-const REFS = { T9: ['char:'], T13: ['set:'], T14: ['prop:'], T17: ['board:'], T18: ['cut:animatic'], T20: ['key:'], T21: ['take:'], T23: ['line:', 'shotaudio:'], T24: ['sync:'],
-  T25: ['sync:', 'take:'], T26: ['cut:fine'], T27: ['cut:vfx'], T28: ['cut:graded'], T29: ['cue:'], T30: ['song:'], T31: ['amb:'], T32: ['cut:mixed'], T33: ['title:'], T34: ['srt:'], T35: ['trailer', 'poster'], T36: ['deliver:'] };
+const REFS = { T22: ['perf:'], T9: ['char:'], T13: ['set:'], T14: ['prop:'], T17: ['board:'], T18: ['cut:animatic'], T20: ['key:'], T21: ['take:'], T23: ['line:', 'shotaudio:'], T24: ['sync:'],
+  T25: ['sync:', 'take:'], T26: ['cut:fine'], T27: ['cut:vfx'], T28: ['cut:graded'], T29: ['cue:'], T30: ['song:'], T31: ['amb:'], T32: ['cut:mixed'], T33: ['title:'], T34: ['srt:', 'dubmix:'], T35: ['trailer', 'poster'], T36: ['deliver:'] };
 
 function friendly(id, o) {
   if (!o) return '';
@@ -251,6 +256,8 @@ async function stepPage(pid, sid) {
         ${s.status === 'review' && !s.draft ? '<span class="muted">Write your version below, then approve.</span>' : ''}
         <button class="btn" id="versions">Versions</button>
       </div>
+      <div id="items"></div>
+      <div id="slots"></div>
       <div id="friendly">${friendly(sid, shown)}</div>
       <div id="editor"></div>
       ${REFS[sid] ? '<h2>Media</h2><div id="media" class="muted">Loading…</div>' : ''}
@@ -266,14 +273,18 @@ async function stepPage(pid, sid) {
       $('#vers').querySelectorAll('[data-v]').forEach((b) => b.addEventListener('click', guard(async () => { await post(`/api/projects/${pid}/steps/${sid}/restore/${b.dataset.v}`); toast('Restored; later steps are now out of date'); draw(); })));
     });
     editor(pid, sid, s, d);
+    itemOverrides(pid, sid, def, d, mode);
+    slots(pid, sid);
     if (REFS[sid]) gallery(pid, sid);
   };
   await draw();
   refreshTimer = setInterval(async () => {
     if (document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
     const d = await api(`/api/projects/${pid}`).catch(() => null);
-    if (d && ['queued', 'running'].includes(d.steps[sid].status) === false && view.dataset.last === 'running') draw();
-    if (d) view.dataset.last = ['queued', 'running'].includes(d.steps[sid].status) ? 'running' : d.steps[sid].status;
+    if (!d) return;
+    const busy = ['queued', 'running'].includes(d.steps[sid].status);
+    if (busy || view.dataset.last === 'running') draw();
+    view.dataset.last = busy ? 'running' : d.steps[sid].status;
   }, 4000);
 }
 
@@ -316,6 +327,37 @@ function editor(pid, sid, s, d) {
   const parse = () => { try { return JSON.parse($('#e1').value); } catch { throw new Error('That is not valid JSON'); } };
   $('#eSave').onclick = guard(() => saveAndApprove(parse()));
   $('#eDraft').onclick = guard(async () => { await api(`/api/projects/${pid}/steps/${sid}/draft`, { method: 'PUT', body: JSON.stringify({ draft: parse() }) }); toast('Draft saved'); });
+}
+
+// Manual for some roles or scenes while the step stays Auto for the rest.
+function itemOverrides(pid, sid, def, d, mode) {
+  const box = $('#items');
+  if (!def.items || mode === 'manual') { box.innerHTML = ''; return; }
+  const src = def.items === 'role' ? d.steps.T8.output && d.steps.T8.output.characters.map((c) => ({ key: c.id, label: c.name }))
+    : d.steps.T4.output && d.steps.T4.output.scenes.map((x) => ({ key: x.n, label: `${x.n}. ${x.slug}` }));
+  if (!src) { box.innerHTML = `<p class="muted small">Once the ${def.items === 'role' ? 'characters' : 'scene outline'} exist, you can set single ${def.items}s of this step to Manual.</p>`; return; }
+  const cur = ((d.project.policy.overrides || {})[sid] || {})[def.items === 'role' ? 'roles' : 'scenes'] || [];
+  box.innerHTML = `<details ${cur.length ? 'open' : ''}><summary class="muted" style="cursor:pointer;margin:10px 0">Manual for specific ${def.items}s (${cur.length} set)</summary>
+    <div class="card"><div class="row">${src.map((x) => `<label class="row small" style="gap:6px"><input type="checkbox" value="${esc(x.key)}" ${cur.map(String).includes(String(x.key)) ? 'checked' : ''}>${esc(x.label)}</label>`).join('')}</div>
+    <p class="muted small">These get extra candidates and wait for your pick or edit; everything else in this step stays Auto.</p><button class="btn sm" id="saveItems">Save</button></div></details>`;
+  $('#saveItems').onclick = guard(async () => {
+    const vals = [...box.querySelectorAll('input:checked')].map((x) => (def.items === 'scene' ? Number(x.value) : x.value));
+    const overrides = { ...(d.project.policy.overrides || {}), [sid]: def.items === 'role' ? { roles: vals } : { scenes: vals } };
+    await api(`/api/projects/${pid}`, { method: 'PATCH', body: JSON.stringify({ policy: { overrides } }) });
+    toast('Saved');
+  });
+}
+
+async function slots(pid, sid) {
+  const list = await api(`/api/projects/${pid}/steps/${sid}/slots`).catch(() => []);
+  const box = $('#slots');
+  if (!box || !list.length) return;
+  box.innerHTML = `<h2>Your files</h2><p class="muted small">${esc(list[0].hint)}</p><table>${list.map((x) => `<tr><td>${esc(x.label)}</td><td style="width:320px"><input type="file" data-ref="${esc(x.ref)}"></td></tr>`).join('')}</table>`;
+  box.querySelectorAll('input[type=file]').forEach((inp) => inp.addEventListener('change', guard(async () => {
+    const fd = new FormData();
+    fd.append('ref', inp.dataset.ref); fd.append('step', sid); fd.append('file', inp.files[0]);
+    await post(`/api/projects/${pid}/upload`, fd); toast('Uploaded and chosen');
+  })));
 }
 
 async function gallery(pid, sid) {

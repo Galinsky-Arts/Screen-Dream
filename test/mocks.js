@@ -99,7 +99,7 @@ app.post(/^\/fal\/(.+)$/, (r, res) => {
   if (!/^Key /.test(r.get('authorization') || '')) return res.status(401).json({ detail: 'no key' });
   const id = `r${++req}`;
   log.fal.push({ model, input: r.body });
-  results[id] = /video|lipsync|upscale/.test(model) ? { video: { url: `${BASE}/files/clip.mp4` } } : { images: [{ url: `${BASE}/files/img.png` }] };
+  results[id] = /video|lipsync|upscale|motion/.test(model) ? { video: { url: `${BASE}/files/clip.mp4` } } : { images: [{ url: `${BASE}/files/img.png` }] };
   res.json({ request_id: id, status_url: `${BASE}/fal-status/${id}`, response_url: `${BASE}/fal-result/${id}` });
 });
 app.get('/fal-status/:id', (r, res) => res.json({ status: 'COMPLETED' }));
@@ -118,6 +118,12 @@ app.post('/omega/api/create', (r, res) => { log.omega.push(r.body); res.json({ j
 app.get('/omega/api/jobs/status', (r, res) => res.json([{ id: Number(r.query.ids), status: 'succeeded' }]));
 app.get('/omega/api/songs', (r, res) => res.json({ songs: Array.from({ length: omegaJob }, (_, i) => ({ id: 100 + i + 1, job_id: i + 1, title: 't', duration_ms: 20000 })) }));
 app.get('/omega/api/songs/:id/download', (r, res) => res.sendFile(path.join(DIR, 'music.mp3')));
+app.post('/omega/api/releases', (r, res) => { log.omega.push({ release: r.body }); res.json({ id: 9, title: r.body.title }); });
 app.get('/omega/api/albums/:id', (r, res) => res.json({ id: Number(r.params.id), title: 'Death by Discography', premise: 'A comic whodunit.', message: 'm', constraints: 'c' }));
+
+// ------------------------------------------------------------------ S3-compatible bucket
+const bucket = new Map();
+app.put(/^\/s3\/([^/]+)\/(.+)$/, express.raw({ type: '*/*', limit: '500mb' }), (r, res) => { bucket.set(r.params[1], r.body); log.s3 = (log.s3 || 0) + 1; res.setHeader('ETag', '"x"'); res.end(); });
+app.get(/^\/s3\/([^/]+)\/(.+)$/, (r, res) => { const b = bucket.get(r.params[1]); if (!b) return res.status(404).send('<Error><Code>NoSuchKey</Code></Error>'); res.end(b); });
 
 app.listen(PORT, () => console.log(`mocks on :${PORT}`));

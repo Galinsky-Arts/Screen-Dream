@@ -48,8 +48,10 @@ const CATALOG = [
 ];
 
 const runners = { ...plan, ...make };
+// Steps whose Manual toggle can also be set per role or per scene, while the rest stays Auto.
+const ITEMS = { T9: 'role', T11: 'role', T12: 'role', T16: 'scene', T17: 'scene', T20: 'scene', T21: 'scene', T22: 'scene', T23: 'scene', T24: 'scene', T25: 'scene', T31: 'scene' };
 const STEPS = CATALOG.map(([id, stage, name, deps, manual, auto, manualText]) => ({
-  id, stage, stageName: STAGES[stage], name, deps, manual, autoText: auto, manualText,
+  id, stage, stageName: STAGES[stage], name, deps, manual, autoText: auto, manualText, items: ITEMS[id] || null,
   media: !!(runners[id] && runners[id].media),
   runner: runners[id],
 }));

@@ -41,6 +41,12 @@ async function makeTake(ctx, sh) {
   const key = await ctx.chosen(`key:${sh.id}`);
   if (!key) throw new Error(`Shot ${sh.id} has no keyframe`);
   const dir = (ctx.get('T22') && ctx.get('T22').notes.find((n) => n.shot === sh.id)) || {};
+  // Your own performance for this shot (filmed on your phone) drives the take when a motion model is set.
+  const perf = await ctx.chosen(`perf:${sh.id}`);
+  if (perf && fal.MODELS.motion) {
+    const r = await fal.motion(ctx.publicUrl(perf), ctx.publicUrl(key), shotPrompt(ctx, sh, dir.direction || ''));
+    return ctx.asset({ ref: `take:${sh.id}`, kind: 'video', url: r.url, provider: 'fal', model: r.model, prompt: shotPrompt(ctx, sh), cost: r.cost, meta: { from_performance: perf.id } });
+  }
   const r = await fal.video(shotPrompt(ctx, sh, dir.direction || ''), ctx.publicUrl(key), { seconds: sh.seconds });
   return ctx.asset({ ref: `take:${sh.id}`, kind: 'video', url: r.url, provider: 'fal', model: r.model, prompt: shotPrompt(ctx, sh), cost: r.cost });
 }
@@ -68,13 +74,17 @@ async function pictureFor(ctx, sh) {
 const T20 = {
   media: true,
   async run(ctx) {
-    for (const sh of shotsInScope(ctx)) {
-      if ((await ctx.assets(`key:${sh.id}`)).length) continue;
-      const prompt = `Cinematic film still, final quality. ${shotPrompt(ctx, sh)}`;
-      const r = await fal.reference(prompt, await refsFor(ctx, sh), { aspect: ctx.aspect() });
-      const a = await ctx.asset({ ref: `key:${sh.id}`, kind: 'image', url: r.url, provider: 'fal', model: r.model, prompt, cost: r.cost });
-      await ctx.choose(a.id);
-    }
+    const shots = shotsInScope(ctx);
+    let n = 0;
+    await ctx.pool(shots, async (sh) => {
+      if (!(await ctx.assets(`key:${sh.id}`)).length) {
+        const prompt = `Cinematic film still, final quality. ${shotPrompt(ctx, sh)}`;
+        const r = await fal.reference(prompt, await refsFor(ctx, sh), { aspect: ctx.aspect() });
+        const a = await ctx.asset({ ref: `key:${sh.id}`, kind: 'image', url: r.url, provider: 'fal', model: r.model, prompt, cost: r.cost });
+        await ctx.choose(a.id);
+      }
+      if (++n % 5 === 0) await ctx.status(`Keyframes: ${n}/${shots.length}`);
+    });
     return { output: { keyframes: shotsInScope(ctx).length } };
   },
 };
@@ -102,11 +112,16 @@ Shots: ${shots.map((s) => `${s.id}: ${s.action}`).join('\n')}`,
 const T21 = {
   media: true,
   async run(ctx) {
-    for (const sh of shotsInScope(ctx)) {
+    const shots = shotsInScope(ctx);
+    let n = 0;
+    await ctx.pool(shots, async (sh) => {
+      const mine = ctx.itemManual(sh.scene);
+      const want = mine ? Math.max(3, ctx.takes()) : ctx.takes();
       let have = await ctx.assets(`take:${sh.id}`);
-      while (have.length < ctx.takes()) { await makeTake(ctx, sh); have = await ctx.assets(`take:${sh.id}`); }
-      if (!have.find((a) => a.chosen) && !ctx.manual) await ctx.choose(have[0].id);
-    }
+      while (have.length < want) { await makeTake(ctx, sh); have = await ctx.assets(`take:${sh.id}`); }
+      if (!have.find((a) => a.chosen) && !mine) await ctx.choose(have[0].id);
+      if (++n % 5 === 0) await ctx.status(`Takes: ${n}/${shots.length} shots`);
+    });
     return { output: { shots: shotsInScope(ctx).length, takes_per_shot: ctx.takes() } };
   },
 };
@@ -117,8 +132,8 @@ const T23 = {
     const voices = ctx.get('T11').voices;
     const fallback = Object.values(voices).find(Boolean);
     let lines = 0;
-    for (const sh of shotsInScope(ctx)) {
-      if (!sh.lines.length || (await ctx.assets(`shotaudio:${sh.id}`)).length) continue;
+    await ctx.pool(shotsInScope(ctx), async (sh) => {
+      if (!sh.lines.length || (await ctx.assets(`shotaudio:${sh.id}`)).length) return;
       const files = [];
       for (const [i, l] of sh.lines.entries()) {
         let a = await ctx.chosen(`line:${sh.id}:${i}`);
@@ -143,7 +158,7 @@ const T23 = {
       const a = await ctx.asset({ ref: `shotaudio:${sh.id}`, kind: 'audio', file: out, ext: '.mp3', provider: 'ffmpeg', duration_ms: ms, meta: { lines: files.map((f) => f.ms) } });
       await ctx.choose(a.id);
       fs.rmSync(dir, { recursive: true, force: true });
-    }
+    });
     return { output: { lines } };
   },
 };
@@ -153,10 +168,10 @@ const T24 = {
   async run(ctx) {
     if (!fal.MODELS.lipsync) return { output: { synced: 0, note: 'No lip-sync model configured (FAL_LIPSYNC_MODEL)' } };
     let n = 0;
-    for (const sh of shotsInScope(ctx)) {
-      if (!sh.lines.length || !sh.characters.length || (await ctx.assets(`sync:${sh.id}`)).length) continue;
+    await ctx.pool(shotsInScope(ctx), async (sh) => {
+      if (!sh.lines.length || !sh.characters.length || (await ctx.assets(`sync:${sh.id}`)).length) return;
       if (await makeSync(ctx, sh)) n++;
-    }
+    });
     return { output: { synced: n } };
   },
 };
@@ -185,7 +200,7 @@ const T25 = {
           d = { score: 0, identity_match: true, wardrobe_match: true, artifacts: [`Not checked: ${e.message.slice(0, 120)}`], pass: true, fix: 'none' };
         }
         report[sh.id] = { ...d, attempt };
-        if (d.pass || d.fix !== 'reshoot' || ctx.manual) break;
+        if (d.pass || d.fix !== 'reshoot' || ctx.itemManual(sh.scene)) break;
         await makeTake(ctx, sh).then((a) => ctx.choose(a.id));
         if (sh.lines.length) await makeSync(ctx, sh);
       }
@@ -348,12 +363,12 @@ ${out.map((s) => `Scene ${s.n}: ${s.slug}. ${s.summary}`).join('\n')}`,
       prompts = d.scenes;
       await ctx.save({ prompts });
     }
-    for (const p of prompts) {
-      if (!scenes.includes(p.scene) || (await ctx.assets(`amb:${p.scene}`)).length) continue;
+    await ctx.pool(prompts, async (p) => {
+      if (!scenes.includes(p.scene) || (await ctx.assets(`amb:${p.scene}`)).length) return;
       const r = await eleven.soundEffect(`${p.ambience}, seamless loop`, 20);
       const a = await ctx.asset({ ref: `amb:${p.scene}`, kind: 'audio', buf: r.buf, ext: '.mp3', provider: 'elevenlabs', model: r.model, prompt: p.ambience, cost: r.cost });
       await ctx.choose(a.id);
-    }
+    });
     return { output: { scenes: prompts } };
   },
 };
@@ -382,12 +397,16 @@ const T32 = {
     }
     const dir = media.tmpDir();
     const wav = await media.mix(events, seconds, path.join(dir, 'mix.wav'), { lufs: -14 });
+    // Music and effects without dialogue (the M&E stem), for dubbing.
+    const meEvents = events.filter((e) => e.gain !== 0);
+    const meWav = await media.mix(meEvents, seconds, path.join(dir, 'me.wav'), { lufs: -18 });
+    const me = await ctx.asset({ ref: 'mix:me', kind: 'audio', file: meWav, ext: '.wav', provider: 'ffmpeg', duration_ms: Math.round(seconds * 1000) });
     const graded = await ctx.byId(ctx.get('T28').asset);
     const out = await media.mux(await ctx.localPath(graded), wav, path.join(dir, 'mixed.mp4'));
     const m = await ctx.asset({ ref: 'mix:stereo', kind: 'audio', file: wav, ext: '.wav', provider: 'ffmpeg', duration_ms: Math.round(seconds * 1000), meta: { lufs: -14 } });
     const a = await ctx.asset({ ref: 'cut:mixed', kind: 'video', file: out, ext: '.mp4', provider: 'ffmpeg', duration_ms: Math.round(seconds * 1000) });
     fs.rmSync(dir, { recursive: true, force: true });
-    return { output: { asset: a.id, mix: m.id, events: events.length, loudness: '-14 LUFS stereo' } };
+    return { output: { asset: a.id, mix: m.id, me: me.id, events: events.length, loudness: '-14 LUFS stereo' } };
   },
 };
 
@@ -421,39 +440,70 @@ const srtTime = (s) => {
 };
 
 const T34 = {
+  // Subtitles in every subtitle language, and a dubbed mix for every dub language: translated
+  // lines spoken in each character's own voice, laid on the music-and-effects stem.
   media: true,
   async run(ctx) {
-    const { edl } = ctx.get('T26');
+    const { edl, seconds } = ctx.get('T26');
     const shots = Object.fromEntries(ctx.get('T16').shots.map((s) => [s.id, s]));
     const offset = 4; // main title card
-    const cues = [];
+    const lines = [];
     for (const e of edl) {
       const a = await ctx.chosen(`shotaudio:${e.shot}`);
       const lens = (a && a.meta && a.meta.lines) || [];
       let t = e.start - e.in;
       shots[e.shot].lines.forEach((l, i) => {
         const dur = (lens[i] || 2000) / 1000;
-        if (t + dur > e.start) cues.push({ start: offset + Math.max(t, e.start), end: offset + t + dur, text: l.text.replace(/^~\s*/, '♪ ') });
+        if (t + dur > e.start) lines.push({ shot: e.shot, i, at: t, start: Math.max(t, e.start), end: t + dur, character: l.character, text: l.text.replace(/^~\s*/, '♪ ') });
         t += dur + 0.25;
       });
     }
-    const langs = (ctx.intake.subtitle_languages || ['English']).slice(0, 12);
-    const files = {};
-    for (const lang of langs) {
-      let texts = cues.map((c) => c.text);
-      if (!/^english$/i.test(lang)) {
-        const out = [];
-        for (const g of chunk(texts, 80)) {
-          const d = await ctx.claude(`Subtitle translator (${lang})`, `Translate these subtitle lines into ${lang}. Keep line count and order exactly. Keep it natural and short enough to read.\n${JSON.stringify(g)}`, S.obj({ lines: S.arr(S.str) }), { effort: 'low' });
-          out.push(...g.map((x, i) => d.lines[i] || x));
-        }
-        texts = out;
+    const subs = (ctx.intake.subtitle_languages || ['English']).slice(0, 12);
+    const dubs = (ctx.intake.dub_languages || []).filter((l) => !/^english$/i.test(l)).slice(0, 6);
+    const tr = (ctx.progress && ctx.progress.tr) || {};
+    for (const lang of [...new Set([...subs, ...dubs])]) {
+      if (tr[lang]) continue;
+      if (/^english$/i.test(lang)) { tr[lang] = lines.map((l) => l.text); continue; }
+      await ctx.status(`Translating into ${lang}`);
+      const out = [];
+      for (const g of chunk(lines.map((l) => l.text), 80)) {
+        const d = await ctx.claude(`Subtitle translator (${lang})`, `Translate these film dialogue lines into ${lang}. Keep line count and order exactly. Natural, speakable, and about as long as the original so it fits the same timing.\n${JSON.stringify(g)}`, S.obj({ lines: S.arr(S.str) }), { effort: 'low' });
+        out.push(...g.map((x, i) => d.lines[i] || x));
       }
-      const srt = cues.map((c, i) => `${i + 1}\n${srtTime(c.start)} --> ${srtTime(c.end)}\n${texts[i]}\n`).join('\n');
+      tr[lang] = out;
+      await ctx.save({ tr });
+    }
+    const files = {};
+    for (const lang of subs) {
+      const srt = lines.map((c, i) => `${i + 1}\n${srtTime(offset + c.start)} --> ${srtTime(offset + c.end)}\n${tr[lang][i]}\n`).join('\n');
       const a = await ctx.asset({ ref: `srt:${lang}`, kind: 'file', buf: Buffer.from(srt), ext: '.srt', provider: 'claude' });
       files[lang] = a.id;
     }
-    return { output: { languages: langs, files, lines: cues.length, dubs: 'Dubbed audio tracks are not generated in this version; the M&E-ready mix makes them a later add-on.' } };
+    const dubbed = {};
+    const me = ctx.get('T32').me ? await ctx.byId(ctx.get('T32').me) : null;
+    const voices = ctx.get('T11').voices;
+    const fallback = Object.values(voices).find(Boolean);
+    for (const lang of dubs) {
+      await ctx.status(`Dubbing into ${lang}`);
+      const events = [];
+      await ctx.pool(lines.map((l, k) => ({ ...l, k })), async (l) => {
+        let a = await ctx.chosen(`dub:${lang}:${l.shot}:${l.i}`);
+        if (!a) {
+          const v = voices[l.character] || fallback;
+          const r = await eleven.speak(v.voice_id, tr[lang][l.k].replace(/^♪\s*/, ''));
+          a = await ctx.asset({ ref: `dub:${lang}:${l.shot}:${l.i}`, kind: 'audio', buf: r.buf, ext: '.mp3', provider: 'elevenlabs', model: r.model, prompt: tr[lang][l.k], cost: r.cost });
+          await ctx.choose(a.id);
+        }
+        events.push({ file: await ctx.localPath(a), at: Math.max(0, l.at), gain: 0 });
+      });
+      if (me) events.push({ file: await ctx.localPath(me), at: 0, gain: 0 });
+      const dir = media.tmpDir();
+      const wav = await media.mix(events, seconds, path.join(dir, 'dub.wav'), { lufs: -14 });
+      const a = await ctx.asset({ ref: `dubmix:${lang}`, kind: 'audio', file: wav, ext: '.wav', provider: 'ffmpeg', duration_ms: Math.round(seconds * 1000) });
+      dubbed[lang] = a.id;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    return { output: { languages: subs, files, lines: lines.length, dubs: dubbed } };
   },
 };
 
@@ -503,8 +553,16 @@ const T36 = {
     const f = await ctx.asset({ ref: 'deliver:master', kind: 'video', file: final, ext: '.mp4', provider: 'ffmpeg', duration_ms: Math.round(len * 1000) });
     const vert = await media.vertical(final, path.join(dir, 'vertical.mp4'));
     const v = await ctx.asset({ ref: 'deliver:vertical', kind: 'video', file: vert, ext: '.mp4', provider: 'ffmpeg', duration_ms: Math.round(len * 1000) });
+    // A dubbed version per language: the same picture with that language's mix.
+    const dubs = {};
+    for (const [lang, id] of Object.entries(ctx.get('T34').dubs || {})) {
+      const dm = await ctx.byId(id);
+      const dw = await media.mix([{ file: await ctx.localPath(dm), at: 4 }], len, path.join(dir, `d-${Object.keys(dubs).length}.wav`));
+      const dv = await media.mux(vid, dw, path.join(dir, `dub-${Object.keys(dubs).length}.mp4`), { comment: note });
+      dubs[lang] = (await ctx.asset({ ref: `deliver:dub:${lang}`, kind: 'video', file: dv, ext: '.mp4', provider: 'ffmpeg', duration_ms: Math.round(len * 1000) })).id;
+    }
     fs.rmSync(dir, { recursive: true, force: true });
-    return { output: { master: f.id, vertical: v.id, subtitles: ctx.get('T34').files, seconds: Math.round(len), disclosure: note,
+    return { output: { master: f.id, vertical: v.id, dubs, subtitles: ctx.get('T34').files, seconds: Math.round(len), disclosure: note,
       note: 'The AI disclosure is written into the file metadata. Signed C2PA Content Credentials need a signing certificate and are a later add-on.' } };
   },
 };
@@ -518,7 +576,19 @@ Title: ${ctx.title()}. Logline: ${ctx.get('T1').logline}. Runtime: ${Math.round(
 Research where this film can be released: film festivals that accept AI-generated films and fit its genre, and platforms (YouTube, video-on-demand storefronts, aggregators). For each give its AI-content policy as published, deadline or window if found, fee if found, and a source URL. Then write the submission package: synopses at 25, 50 and 300 words, a director's statement in the producer's voice, and content notes (rating, AI disclosure).`,
     S.obj({ targets: S.arr(S.obj({ name: S.str, kind: S.enum(['festival', 'platform']), ai_policy: S.str, deadline: S.str, fee: S.str, url: S.str, fit: S.str })),
       synopsis_25: S.str, synopsis_50: S.str, synopsis_300: S.str, statement: S.str, content_notes: S.str }), { searches: 10, maxTokens: 24000 });
-    return { output: { ...d, submitted: false, note: 'Nothing is submitted automatically. Submissions are prepared here for you to send.' } };
+    // The soundtrack album: every score cue and song this film ordered from Omega, as one Omega release.
+    let soundtrack = (ctx.progress && ctx.progress.soundtrack) || ((ctx.get('T37') || {}).soundtrack && ctx.get('T37').soundtrack.releaseId ? ctx.get('T37').soundtrack : null);
+    if (!soundtrack) {
+      const songIds = [...await ctx.assets('song:'), ...await ctx.assets('cue:')].filter((a) => a.chosen && a.meta && a.meta.omega_song).map((a) => a.meta.omega_song);
+      if (songIds.length) {
+        try {
+          const r = await omega.release({ title: `${ctx.title()} (Original Soundtrack)`, artist: ctx.intake.your_name || '', songIds });
+          soundtrack = { releaseId: r.id, tracks: songIds.length, note: 'Created in Instrument Omega Final Cut: mastering, metadata and outreach continue there.' };
+        } catch (e) { soundtrack = { error: `Could not create the soundtrack release in Omega: ${e.message}` }; }
+        await ctx.save({ soundtrack });
+      }
+    }
+    return { output: { ...d, soundtrack, submitted: false, note: 'Nothing is submitted automatically. Submissions are prepared here for you to send.' } };
   },
 };
 

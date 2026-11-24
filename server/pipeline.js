@@ -19,6 +19,7 @@ function defaultPolicy() {
     tier: 'standard',   // draft | standard | premium
     scope: 'full',      // plan | full
     maxScenes: null,    // render only the first N scenes (null = all)
+    overrides: {},      // per-item Manual inside an Auto step: { T11: { roles: ['ana'] }, T22: { scenes: [3] } }
   };
 }
 
@@ -35,8 +36,41 @@ function cleanPolicy(p = {}) {
     tier: ['draft', 'standard', 'premium'].includes(p.tier) ? p.tier : d.tier,
     scope: ['plan', 'full'].includes(p.scope) ? p.scope : d.scope,
     maxScenes: p.maxScenes ? Math.max(1, Math.round(Number(p.maxScenes))) : null,
+    overrides: cleanOverrides(p.overrides),
   };
 }
+
+function cleanOverrides(o) {
+  const out = {};
+  for (const [id, v] of Object.entries(o || {})) {
+    const def = BY_ID[id];
+    if (!def || !def.items || !v) continue;
+    const list = def.items === 'role' ? (v.roles || []).map(String).filter((x) => /^[\w-]{1,60}$/.test(x)) : (v.scenes || []).map(Number).filter((n) => n > 0);
+    if (list.length) out[id] = def.items === 'role' ? { roles: [...new Set(list)] } : { scenes: [...new Set(list)] };
+  }
+  return out;
+}
+
+// The items of an Auto step that you set to Manual (role ids or scene numbers).
+function manualItems(policy, stepId) {
+  const o = (policy.overrides || {})[stepId];
+  return o ? (o.roles || o.scenes || []) : [];
+}
+
+// Run fn over items, n at a time; the first error stops the rest and is rethrown.
+async function pool(items, n, fn) {
+  let i = 0;
+  let err = null;
+  const workers = Array.from({ length: Math.max(1, Math.min(n, items.length)) }, async () => {
+    while (!err && i < items.length) {
+      const it = items[i++];
+      try { await fn(it); } catch (e) { err = err || e; }
+    }
+  });
+  await Promise.all(workers);
+  if (err) throw err;
+}
+const MEDIA_CONCURRENCY = Number(process.env.MEDIA_CONCURRENCY || 4);
 
 async function getProject(id) {
   const { rows } = await query('SELECT * FROM projects WHERE id=$1', [id]);
@@ -126,6 +160,11 @@ async function makeCtx(project, stepId, { manual } = {}) {
     takes: () => ({ draft: 1, standard: 1, premium: 2 }[policy.tier] || 1),
     inScope: (scene) => !policy.maxScenes || scene <= policy.maxScenes,
     brief: () => brief(project, ctx),
+    // Was this role or scene set to Manual inside an Auto step?
+    itemManual: (key) => ctx.manual || manualItems(policy, stepId).map(String).includes(String(key)),
+    pool: (items, fn, n = MEDIA_CONCURRENCY) => pool(items, n, fn),
+    // Live progress line shown on the step while it runs.
+    async status(text) { await query(`UPDATE steps SET note=$3, updated_at=now() WHERE project_id=$1 AND step_id=$2 AND status='running'`, [project.id, stepId, String(text).slice(0, 300)]); },
     async save(progress) { ctx.progress = progress; await setStep(project.id, stepId, { progress }); },
     async spent() { return spent(project.id); },
     async spend(provider, usd, what) {
@@ -220,9 +259,11 @@ async function runJob(job) {
     const manual = ctx.manual;
     const notify = !manual && project.policy.notify.includes(def.id) && project.policy.notifyHours > 0;
     const hardFail = gate && !gate.pass && HARD_GATES.has(def.id);
-    if (manual || hardFail || job.purpose === 'draft') {
+    const items = manual ? [] : manualItems(project.policy, def.id);
+    if (manual || hardFail || job.purpose === 'draft' || items.length) {
+      const itemNote = items.length ? `Auto finished. You set ${def.items === 'role' ? 'roles' : 'scenes'} ${items.join(', ')} to Manual: review or replace those, then approve.` : null;
       await setStep(project.id, def.id, { status: 'review', draft: res.output, gate, progress: null,
-        note: hardFail ? `Stopped at the QC gate: ${gate.report}` : manual ? `Your turn: ${def.manualText}. Edit or pick, then approve.` : 'AI draft ready.' });
+        note: hardFail ? `Stopped at the QC gate: ${gate.report}` : itemNote || (manual ? `Your turn: ${def.manualText}. Edit or pick, then approve.` : 'AI draft ready.') });
     } else if (notify) {
       const at = new Date(Date.now() + project.policy.notifyHours * 3600 * 1000);
       await setStep(project.id, def.id, { status: 'review', draft: res.output, gate, progress: null, auto_approve_at: at,
@@ -283,4 +324,4 @@ async function retryNeedsKey(service) {
   return rows.length;
 }
 
-module.exports = { defaultPolicy, cleanPolicy, createProject, advance, queueRun, runJob, approve, approveByYou, autoApproveDue, retryNeedsKey, chooseAsset, getProject, stepRows, setStep, spent, makeCtx, STEPS };
+module.exports = { manualItems, defaultPolicy, cleanPolicy, createProject, advance, queueRun, runJob, approve, approveByYou, autoApproveDue, retryNeedsKey, chooseAsset, getProject, stepRows, setStep, spent, makeCtx, STEPS };
