@@ -8,6 +8,8 @@ const SERVICES = {
   anthropic: { env: 'ANTHROPIC_API_KEY', label: 'Claude (Anthropic): writing, planning, QC, research' },
   fal: { env: 'FAL_KEY', label: 'fal.ai: images, video, lip sync, upscaling' },
   elevenlabs: { env: 'ELEVENLABS_API_KEY', label: 'ElevenLabs: voices, dialogue, sound effects' },
+  openai: { env: 'OPENAI_API_KEY', label: 'ChatGPT images (OpenAI)' },
+  xai: { env: 'XAI_API_KEY', label: 'Grok Imagine images (xAI)' },
   omega: { env: 'OMEGA_PASSWORD', label: 'Instrument Omega app password (score and songs)' },
 };
 

@@ -223,9 +223,16 @@ Pick the one character the producer should play, preferring sizes ${sizes.join('
 
 // Resemblance screen. A real face-match against a public-figure index needs a licensed face
 // database; this version asks Claude (vision) whether the face looks like a recognizable real person.
-async function resemblanceCheck(ctx, url) {
+async function imageBlock(ctx, asset) {
+  const file = await ctx.localPath(asset);
+  const ext = path.extname(file).toLowerCase();
+  const media_type = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png';
+  return { type: 'image', source: { type: 'base64', media_type, data: fs.readFileSync(file).toString('base64') } };
+}
+
+async function resemblanceCheck(ctx, asset) {
   const d = await ctx.claude('Clearance (likeness screen)', [
-    { type: 'image', source: { type: 'url', url } },
+    await imageBlock(ctx, asset),
     { type: 'text', text: 'Does this face closely resemble a specific real, recognizable person (actor, politician, celebrity, public figure)? Answer honestly; generic faces are fine.' },
   ], S.obj({ resembles_real_person: S.bool, who_or_why: S.str }), { effort: 'low' });
   return d;
@@ -251,9 +258,8 @@ const T9 = {
       let have = await ctx.assets(ref);
       for (let tries = 0; have.length < n && tries < n + 3; tries++) {
         const prompt = `Character reference sheet, photoreal film still, neutral studio light, front view, full face clearly visible, plain background. ${c.name}, ${c.age}, ${c.gender}. ${c.look}. Wearing ${c.wardrobe}. ${look ? `Film look: ${look.style_prompt}` : ''}`;
-        const r = await fal.image(prompt, { aspect: '3:4' });
-        const a = await ctx.asset({ ref, kind: 'image', url: r.url, provider: 'fal', model: r.model, prompt, cost: r.cost });
-        const screen = await resemblanceCheck(ctx, r.url).catch(() => null);
+        const a = await ctx.genImage({ ref, prompt, aspect: '3:4' });
+        const screen = await resemblanceCheck(ctx, a).catch(() => null);
         if (screen && screen.resembles_real_person) { await ctx.discard(a.id, `Resembles a real person: ${screen.who_or_why}`); continue; }
         have = await ctx.assets(ref);
       }
@@ -334,8 +340,7 @@ Design every location as a reusable set: id (slug), name, a precise visual descr
     await ctx.pool(sets, async (s) => {
       if ((await ctx.assets(`set:${s.id}`)).length) return;
       const prompt = `Wide establishing film still of an empty set, no people. ${s.name}: ${s.description}. ${look ? look.style_prompt : ''}`;
-      const r = await fal.image(prompt, { aspect: ctx.aspect() });
-      const a = await ctx.asset({ ref: `set:${s.id}`, kind: 'image', url: r.url, provider: 'fal', model: r.model, prompt, cost: r.cost });
+      const a = await ctx.genImage({ ref: `set:${s.id}`, prompt, aspect: ctx.aspect() });
       await ctx.choose(a.id);
     });
     return { output: { sets } };
@@ -359,8 +364,7 @@ List the hero props (props the story depends on or that are seen in close-up), a
     await ctx.pool(props.slice(0, 15), async (p) => {
       if ((await ctx.assets(`prop:${p.id}`)).length) return;
       const prompt = `Product-style film prop reference photo on a neutral background: ${p.name}. ${p.description}`;
-      const r = await fal.image(prompt, { aspect: '1:1' });
-      const a = await ctx.asset({ ref: `prop:${p.id}`, kind: 'image', url: r.url, provider: 'fal', model: r.model, prompt, cost: r.cost });
+      const a = await ctx.genImage({ ref: `prop:${p.id}`, prompt, aspect: '1:1' });
       await ctx.choose(a.id);
     });
     return { output: { props } };
@@ -418,8 +422,7 @@ const T17 = {
       if ((await ctx.assets(`board:${sh.id}`)).length) return;
       const who = sh.characters.map((id) => chars[id] ? `${chars[id].name} (${chars[id].look})` : id).join('; ');
       const prompt = `Storyboard frame, cinematic, ${sh.size}, ${sh.lens} lens. ${sh.action}. ${who ? `In frame: ${who}.` : ''} ${look.style_prompt}`;
-      const r = await fal.image(prompt.slice(0, 1800), { aspect: ctx.aspect(), draft: true });
-      const a = await ctx.asset({ ref: `board:${sh.id}`, kind: 'image', url: r.url, provider: 'fal', model: r.model, prompt, cost: r.cost });
+      const a = await ctx.genImage({ ref: `board:${sh.id}`, prompt: prompt.slice(0, 1800), aspect: ctx.aspect(), draft: true });
       await ctx.choose(a.id);
       if (++n % 5 === 0) await ctx.status(`Storyboards: ${n}/${shots.length}`);
     });
@@ -481,4 +484,4 @@ const T19 = {
   },
 };
 
-module.exports = { T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, scriptOf, fountain, chunk };
+module.exports = { resemblanceCheck, imageBlock, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, scriptOf, fountain, chunk };

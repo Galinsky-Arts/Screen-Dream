@@ -23,7 +23,7 @@ ff(['-f', 'lavfi', '-i', 'sine=f=220:d=20', '-c:a', 'libmp3lame', path.join(DIR,
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use('/files', express.static(DIR));
-const log = { claude: [], fal: [], eleven: [], omega: [] };
+const log = { claude: [], fal: [], eleven: [], omega: [], openai: [], xai: [] };
 app.get('/log', (req, res) => res.json(log));
 
 // ------------------------------------------------------------------ Claude
@@ -120,6 +120,19 @@ app.get('/omega/api/songs', (r, res) => res.json({ songs: Array.from({ length: o
 app.get('/omega/api/songs/:id/download', (r, res) => res.sendFile(path.join(DIR, 'music.mp3')));
 app.post('/omega/api/releases', (r, res) => { log.omega.push({ release: r.body }); res.json({ id: 9, title: r.body.title }); });
 app.get('/omega/api/albums/:id', (r, res) => res.json({ id: Number(r.params.id), title: 'Death by Discography', premise: 'A comic whodunit.', message: 'm', constraints: 'c' }));
+
+// ------------------------------------------------------------------ OpenAI images and xAI images
+const b64img = () => fs.readFileSync(path.join(DIR, 'img.png')).toString('base64');
+app.post('/openai/v1/images/generations', (r, res) => {
+  if (!/^Bearer /.test(r.get('authorization') || '')) return res.status(401).json({ error: { message: 'no key' } });
+  log.openai.push({ kind: 'generate', model: r.body.model, size: r.body.size, quality: r.body.quality });
+  res.json({ data: [{ b64_json: b64img() }] });
+});
+app.post('/openai/v1/images/edits', require('multer')().array('image[]', 16), (r, res) => {
+  log.openai.push({ kind: 'edit', model: r.body.model, images: (r.files || []).length });
+  res.json({ data: [{ b64_json: b64img() }] });
+});
+app.post('/xai/v1/images/generations', (r, res) => { log.xai.push({ model: r.body.model }); res.json({ data: [{ b64_json: b64img() }] }); });
 
 // ------------------------------------------------------------------ S3-compatible bucket
 const bucket = new Map();

@@ -17,6 +17,9 @@ const omega = require('./providers/omega');
 const { STEPS, STAGES, BY_ID } = require('./steps');
 const { fountain, scriptOf } = require('./steps/plan');
 const RIGHTS = require('./rights');
+const images = require('./providers/images');
+const { refsFor } = require('./steps/make');
+const { resemblanceCheck } = require('./steps/plan');
 
 const PORT = Number(process.env.PORT || 3000);
 const APP_PASSWORD = process.env.APP_PASSWORD || '';
@@ -68,6 +71,8 @@ app.delete('/api/keys/:service', wrap(async (req, res) => { await keys.set(req.p
 app.get('/api/rights', (req, res) => res.json(RIGHTS));
 
 app.get('/api/catalog', (req, res) => res.json({
+  imageProviders: images.list(),
+  sharedKeysNote: process.env.SHARED_KEYS_NOTE || null,
   stages: STAGES,
   steps: STEPS.map(({ runner, ...s }) => s),
   policy: pipeline.defaultPolicy(),
@@ -181,6 +186,38 @@ app.post('/api/projects/:id/steps/:step/restore/:version', wrap(async (req, res)
   await pipeline.approve(Number(req.params.id), def.id, v.output, 'you');
   setImmediate(worker.tick);
   res.json({ ok: true });
+}));
+
+// One more image for a slot, with the generator you choose and (optionally) your own prompt.
+// You can go back and forth between generators until one is right, then press "Use this".
+const IMAGE_REFS = { T9: 'char:', T13: 'set:', T14: 'prop:', T17: 'board:', T20: 'key:', T35: 'poster' };
+app.post('/api/projects/:id/steps/:step/generate', wrap(async (req, res) => {
+  const def = stepOf(req);
+  if (!def.images) throw bad('This step does not make images');
+  const ref = String(req.body.ref || '');
+  if (!ref.startsWith(IMAGE_REFS[def.id])) throw bad('That slot does not belong to this step');
+  const provider = images.PROVIDERS[req.body.provider] ? req.body.provider : undefined;
+  const p = await pipeline.getProject(req.params.id);
+  const ctx = await pipeline.makeCtx(p, def.id);
+  const { rows: [prev] } = await query('SELECT * FROM assets WHERE project_id=$1 AND ref=$2 AND kind=\'image\' AND source=\'ai\' ORDER BY id DESC LIMIT 1', [p.id, ref]);
+  const prompt = String(req.body.prompt || (prev && prev.prompt) || '').trim().slice(0, 8000);
+  if (!prompt) throw bad('Write a prompt for this image');
+  const meta = (prev && prev.meta) || {};
+  let refs = [];
+  if (ref.startsWith('key:') && ctx.get('T16')) {
+    const sh = ctx.get('T16').shots.find((s) => `key:${s.id}` === ref);
+    if (sh) refs = await refsFor(ctx, sh);
+  }
+  const aspect = meta.aspect || (ref.startsWith('char:') || ref === 'poster' ? '3:4' : ref.startsWith('prop:') ? '1:1' : ctx.aspect());
+  const a = await ctx.genImage({ ref, prompt, aspect, draft: !!meta.draft, refs, provider });
+  if (ref.startsWith('char:')) {
+    const screen = await resemblanceCheck(ctx, a).catch(() => null);
+    if (screen && screen.resembles_real_person) {
+      await ctx.discard(a.id, `Resembles a real person: ${screen.who_or_why}`);
+      throw bad(`That image looked like a real person (${screen.who_or_why}), so it was discarded. Try again or change the prompt.`);
+    }
+  }
+  res.json(a);
 }));
 
 // Slots a step expects you might fill with your own file (shown even before anything exists).

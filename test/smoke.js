@@ -50,6 +50,7 @@ async function waitStep(id, step, statuses, ms = 120000) {
   const env = {
     PORT: String(APP), APP_PASSWORD: 'pw', APP_SECRET: 'test-secret', MEDIA_DIR: media, PUBLIC_URL: base, WORKER_TICK_MS: '300',
     ANTHROPIC_API_KEY: 'test', ANTHROPIC_BASE_URL: `http://localhost:${MOCK}/anthropic`,
+    OPENAI_API_KEY: 'test', OPENAI_BASE_URL: `http://localhost:${MOCK}/openai`, XAI_API_KEY: 'test', XAI_BASE_URL: `http://localhost:${MOCK}/xai`,
     FAL_KEY: 'test', FAL_QUEUE_URL: `http://localhost:${MOCK}/fal`, FAL_POLL_MS: '50', FAL_UPSCALE_MODEL: '',
     ELEVENLABS_API_KEY: 'test', ELEVENLABS_BASE_URL: `http://localhost:${MOCK}/eleven`,
     OMEGA_URL: `http://localhost:${MOCK}/omega`, OMEGA_PASSWORD: 'x', OMEGA_POLL_MS: '50',
@@ -67,6 +68,7 @@ async function waitStep(id, step, statuses, ms = 120000) {
 
   const cat = await api('/api/catalog');
   assert.strictEqual(cat.steps.length, 38);
+  assert.ok(Object.values(cat.policy.imageProviders).every((p) => p === 'openai'), 'ChatGPT is the default image generator');
   assert.ok(Object.values(cat.policy.modes).every((m) => m === 'auto'), 'every toggle defaults to Auto');
   console.log('ok  catalog: 38 steps, all Auto by default');
 
@@ -79,7 +81,7 @@ async function waitStep(id, step, statuses, ms = 120000) {
   await api('/api/consents', { method: 'POST', body: JSON.stringify({ signed_name: 'Test Producer', roles: ['supporting', 'lead'], voice: true, death_depiction: 'ask', age_shift: 'ask', months: 12 }) });
   const { id } = await api('/api/projects', { method: 'POST', body: JSON.stringify({
     intake: { title: 'Smoke Film', concept: 'A two-scene test film about a missing tape.', format: 'short', runtime: 1, genre: 'comedy', likeness: 'supporting', your_name: 'Test Producer', your_age: 30, subtitle_languages: ['English', 'Spanish'], dub_languages: ['French'] },
-    policy: { notifyHours: 0, maxScenes: 2, modes: { T7: 'manual' } },
+    policy: { notifyHours: 0, maxScenes: 2, modes: { T7: 'manual' }, imageProviders: { T17: 'fal' } },
     budgetCap: 500,
   }) });
 
@@ -138,6 +140,13 @@ async function waitStep(id, step, statuses, ms = 120000) {
   assert.ok(master && master.duration_ms > 4000, 'master rendered');
   const file = await fetch(`${base}/api/assets/${master.id}/file`, { headers: { Cookie: cookie } });
   assert.ok(file.ok && Number(file.headers.get('content-length')) > 10000, 'master downloadable');
+  // Generate another character image with a different generator (Grok), then pick it.
+  const chars = await api(`/api/projects/${id}/assets?ref=char:ana`);
+  const extra = await api(`/api/projects/${id}/steps/T9/generate`, { method: 'POST', body: JSON.stringify({ ref: 'char:ana', provider: 'xai', prompt: 'Ana, close-up, softer light' }) });
+  assert.strictEqual(extra.provider, 'xai');
+  assert.strictEqual((await api(`/api/projects/${id}/assets?ref=char:ana`)).length, chars.length + 1);
+  console.log('ok  generate another image with a different generator (Grok), prompt edited');
+
   // Durable storage: wipe the local disk (as a Render restart would); the master comes back from the bucket.
   fs.rmSync(media, { recursive: true, force: true });
   fs.mkdirSync(media);
@@ -155,6 +164,9 @@ async function waitStep(id, step, statuses, ms = 120000) {
   assert.ok(log.omega.some((o) => o.type === 'instrumental') && log.omega.some((o) => o.type === 'song'), 'score and song ordered from Omega');
   assert.ok(log.fal.some((f) => /image-to-video/.test(f.model)) && log.fal.some((f) => /lipsync/.test(f.model)));
   assert.ok(log.fal.some((f) => f.model === 'fal-ai/test-motion'), 'your performance drove a take');
+  assert.ok(log.openai.some((o) => o.kind === 'generate') && log.openai.some((o) => o.kind === 'edit' && o.images >= 2), 'ChatGPT made designs and reference-guided keyframes');
+  assert.ok(log.fal.some((f) => /flux\/schnell/.test(f.model)), 'storyboards used fal as chosen for that step');
+  assert.strictEqual(log.xai.length, 1);
   assert.ok(log.omega.some((o) => o.release && o.release.songIds.length >= 2), 'soundtrack release created in Omega');
   assert.ok(done.steps.T37.output.soundtrack.releaseId === 9);
   console.log(`ok  providers: ${log.claude.length} Claude calls, ${log.fal.length} fal jobs, ${log.eleven.length} ElevenLabs calls, ${log.omega.length} Omega orders`);

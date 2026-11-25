@@ -17,9 +17,10 @@ What Instrument Omega does for albums, ScreenDream does for film: you give it a 
 | Delivery | T34 subtitles (translated) and dubbed mixes (each character's own voice on the music-and-effects stem) · T35 trailer and poster · T36 master, vertical edition and one version per dub language |
 | Release | T37 festival and platform package, and the soundtrack album created as a release in Instrument Omega · T38 press research and pitch drafts |
 
-3. **Manual for some roles or scenes.** Steps that work per character (designs, voices, wardrobe) or per scene (shots, boards, keyframes, takes, performance, dialogue, lip sync, continuity, ambience) can stay Auto while chosen roles or scenes are Manual: those get extra candidates and wait for your pick (step page, "Manual for specific roles/scenes").
-4. **Your turn.** Manual steps, hard QC gates (casting consent, budget) and "notify me" previews wait on the project page under *Waiting for you*. Previews auto-approve after the window you set.
-5. **Everything is versioned.** Approving a new version of any step marks every step built on it as out of date, and Auto steps rebuild. Any earlier version can be restored.
+3. **Image generator per step.** Every step that makes images (T9, T13, T14, T17, T20, T35) has its own generator choice: ChatGPT (default), Grok Imagine or fal. Pick it on the intake toggle sheet or on the step page. On any image slot, "Generate another" makes one more image with whichever generator you pick and an editable prompt, so you can go back and forth until one is right, then press "Use this".
+4. **Manual for some roles or scenes.** Steps that work per character (designs, voices, wardrobe) or per scene (shots, boards, keyframes, takes, performance, dialogue, lip sync, continuity, ambience) can stay Auto while chosen roles or scenes are Manual: those get extra candidates and wait for your pick (step page, "Manual for specific roles/scenes").
+5. **Your turn.** Manual steps, hard QC gates (casting consent, budget) and "notify me" previews wait on the project page under *Waiting for you*. Previews auto-approve after the window you set.
+6. **Everything is versioned.** Approving a new version of any step marks every step built on it as out of date, and Auto steps rebuild. Any earlier version can be restored.
 
 ## Your likeness
 
@@ -30,7 +31,9 @@ Only your own face and voice can be used, and only under a signed consent record
 | Service | Env var | Used for |
 |---|---|---|
 | Claude (Anthropic) | `ANTHROPIC_API_KEY` | Every writing, planning, QC and research step (`claude-opus-5-5`, structured output, adaptive thinking, server-side refusal fallback) |
-| fal.ai | `FAL_KEY` | Images, reference-guided keyframes, image-to-video, lip sync, optional upscaling |
+| ChatGPT images (OpenAI) | `OPENAI_API_KEY` | Default image generator: designs, sets, props, storyboards, keyframes (reference images via the edits endpoint), poster. Model: `OPENAI_IMAGE_MODEL` (default `gpt-image-1`) |
+| Grok Imagine (xAI) | `XAI_API_KEY` | Optional image generator. Model: `XAI_IMAGE_MODEL` (default `grok-2-image`) |
+| fal.ai | `FAL_KEY` | Image-to-video, lip sync, optional upscaling and motion transfer; also selectable as an image generator (FLUX / Nano Banana) |
 | ElevenLabs | `ELEVENLABS_API_KEY` | Voice library, cloning your own voice, dialogue, ambience |
 | Instrument Omega | `OMEGA_URL`, `OMEGA_PASSWORD` | Score cues and songs, made in Omega and downloaded |
 
@@ -72,7 +75,7 @@ SCREENDREAM_SERVICE_ID=srv-... scripts/deploy-render.sh                  # later
 
 Working and tested against mocks: the whole pipeline, Auto/Manual per step, gates, versions and staleness, consent, uploads, budget cap, the ffmpeg animatic, edit, grade, mix, titles, subtitles, trailer and deliverables.
 
-Not yet verified against the live services: the fal, ElevenLabs and Omega adapters follow those APIs' documented shapes but have only run against the mocks. Check the fal model ids and each model's license before a commercial release (Usage rights page).
+Not yet verified against the live services: the OpenAI, xAI, fal, ElevenLabs and Omega adapters follow those APIs' documented shapes but have only run against the mocks. Check the fal model ids and each model's license before a commercial release (Usage rights page).
 
 Not built yet: signed C2PA Content Credentials (the AI disclosure is in the file metadata and the credits), a licensed face-match database for the resemblance screen (it currently asks Claude's vision model), automatic festival submission and sending pitches. The motion-transfer adapter is off until a fal model id is chosen (`FAL_MOTION_MODEL`), since input names differ between models.
 

@@ -1,7 +1,8 @@
 // The orchestrator: walks the dependency graph, applies each step's Auto/Manual mode, runs jobs,
 // enforces gates and the budget cap, keeps versions, and marks downstream work stale.
 const { query } = require('./db');
-const { STEPS, BY_ID, ORDER, RENDER_STEPS, descendants } = require('./steps');
+const { STEPS, BY_ID, ORDER, RENDER_STEPS, IMAGE_STEPS, descendants } = require('./steps');
+const images = require('./providers/images');
 const claude = require('./claude');
 const storage = require('./storage');
 
@@ -19,6 +20,7 @@ function defaultPolicy() {
     tier: 'standard',   // draft | standard | premium
     scope: 'full',      // plan | full
     maxScenes: null,    // render only the first N scenes (null = all)
+    imageProviders: Object.fromEntries([...IMAGE_STEPS].map((id) => [id, images.DEFAULT])), // openai | xai | fal
     overrides: {},      // per-item Manual inside an Auto step: { T11: { roles: ['ana'] }, T22: { scenes: [3] } }
   };
 }
@@ -37,6 +39,7 @@ function cleanPolicy(p = {}) {
     scope: ['plan', 'full'].includes(p.scope) ? p.scope : d.scope,
     maxScenes: p.maxScenes ? Math.max(1, Math.round(Number(p.maxScenes))) : null,
     overrides: cleanOverrides(p.overrides),
+    imageProviders: Object.fromEntries([...IMAGE_STEPS].map((id) => [id, images.PROVIDERS[(p.imageProviders || {})[id]] ? p.imageProviders[id] : images.DEFAULT])),
   };
 }
 
@@ -163,6 +166,16 @@ async function makeCtx(project, stepId, { manual } = {}) {
     // Was this role or scene set to Manual inside an Auto step?
     itemManual: (key) => ctx.manual || manualItems(policy, stepId).map(String).includes(String(key)),
     pool: (items, fn, n = MEDIA_CONCURRENCY) => pool(items, n, fn),
+    imageProvider: () => (policy.imageProviders || {})[stepId] || images.DEFAULT,
+    // Generate one image with this step's generator (or the one given) and store it as an asset.
+    // refs: assets to use as references (character designs, set plates, props).
+    async genImage({ ref, prompt, aspect, draft, refs, provider }) {
+      const p = images.get(provider || ctx.imageProvider());
+      const refFiles = [];
+      for (const a of refs || []) refFiles.push({ path: await storage.localPath(a).catch(() => null), url: storage.publicUrl(a) });
+      const r = refFiles.length ? await p.reference(prompt, refFiles, { aspect }) : await p.image(prompt, { aspect, draft });
+      return ctx.asset({ ref, kind: 'image', url: r.url, buf: r.buf, ext: '.png', provider: p.id, model: r.model, prompt, cost: r.cost, meta: { image_provider: p.id, refs: (refs || []).map((a) => a.id), aspect: aspect || null, draft: !!draft } });
+    },
     // Live progress line shown on the step while it runs.
     async status(text) { await query(`UPDATE steps SET note=$3, updated_at=now() WHERE project_id=$1 AND step_id=$2 AND status='running'`, [project.id, stepId, String(text).slice(0, 300)]); },
     async save(progress) { ctx.progress = progress; await setStep(project.id, stepId, { progress }); },

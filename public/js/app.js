@@ -36,6 +36,11 @@ $('#loginForm').addEventListener('submit', async (e) => {
 const STATUS = { waiting: 'Waiting', queued: 'Queued', running: 'Running', review: 'Your turn', done: 'Done', failed: 'Failed', needs_key: 'Needs a key', stale: 'Out of date', skipped: 'Skipped' };
 const pill = (s) => `<span class="pill ${s}">${STATUS[s] || s}</span>`;
 
+function providerSelect(current, attrs) {
+  return `<select ${attrs}>${catalog.imageProviders.map((p) => `<option value="${p.id}" ${p.id === (current || 'openai') ? 'selected' : ''}>${esc(p.label)}${p.ready ? '' : ' (no key yet)'}</option>`).join('')}</select>`;
+}
+const keysNote = () => (catalog.sharedKeysNote ? `<div class="note warn">${esc(catalog.sharedKeysNote)}</div>` : '');
+
 // ------------------------------------------------------------------ router
 async function route() {
   clearInterval(refreshTimer);
@@ -58,7 +63,7 @@ window.addEventListener('hashchange', route);
 // ------------------------------------------------------------------ films
 async function films() {
   const list = await api('/api/projects');
-  view.innerHTML = `<div class="row"><div><h1>Films</h1><div class="muted">Each film runs from concept to deliverables. Steps set to Manual wait for you.</div></div><div class="spacer"></div><a class="btn primary" href="#/new">New film</a></div>
+  view.innerHTML = `${keysNote()}<div class="row"><div><h1>Films</h1><div class="muted">Each film runs from concept to deliverables. Steps set to Manual wait for you.</div></div><div class="spacer"></div><a class="btn primary" href="#/new">New film</a></div>
   <h2></h2>
   ${list.length ? `<div class="cards">${list.map((p) => `<div class="card film-card" data-id="${p.id}">
     <div class="row"><b>${esc(p.title)}</b><div class="spacer"></div>${p.review ? `<span class="pill review">${p.review} for you</span>` : p.status === 'done' ? '<span class="pill done">Finished</span>' : ''}</div>
@@ -121,8 +126,10 @@ async function newFilm() {
   const render = () => {
     rows.innerHTML = catalog.stages.map((st, i) => `<tr class="stage-row"><td colspan="5">${esc(st)}</td></tr>` + catalog.steps.filter((s) => s.stage === i).map((s) => `<tr>
       <td>${s.id}</td><td>${esc(s.name)}</td><td class="desc">Auto: ${esc(s.autoText)}<br>Manual: ${esc(s.manualText)}</td>
-      <td><div class="seg" data-id="${s.id}"><button class="${policy.modes[s.id] === 'auto' ? 'on auto' : ''}" data-m="auto">Auto</button><button class="${policy.modes[s.id] === 'manual' ? 'on' : ''}" data-m="manual">Manual</button></div></td></tr>`).join('')).join('');
+      <td><div class="seg" data-id="${s.id}"><button class="${policy.modes[s.id] === 'auto' ? 'on auto' : ''}" data-m="auto">Auto</button><button class="${policy.modes[s.id] === 'manual' ? 'on' : ''}" data-m="manual">Manual</button></div>
+      ${s.images ? `<div style="margin-top:6px">${providerSelect(policy.imageProviders[s.id], `data-gen="${s.id}"`)}<div class="muted small">${policy.modes[s.id] === 'manual' ? 'First pick; switch any time on the step' : 'Image generator'}</div></div>` : ''}</td></tr>`).join('')).join('');
     rows.querySelectorAll('.seg button').forEach((b) => b.addEventListener('click', () => { policy.modes[b.parentElement.dataset.id] = b.dataset.m; render(); }));
+    rows.querySelectorAll('select[data-gen]').forEach((x) => x.addEventListener('change', () => { policy.imageProviders[x.dataset.gen] = x.value; }));
   };
   render();
   $('#allAuto').onclick = () => { Object.keys(policy.modes).forEach((k) => { policy.modes[k] = 'auto'; }); render(); };
@@ -256,6 +263,7 @@ async function stepPage(pid, sid) {
         ${s.status === 'review' && !s.draft ? '<span class="muted">Write your version below, then approve.</span>' : ''}
         <button class="btn" id="versions">Versions</button>
       </div>
+      ${def.images ? `<div class="row" style="margin:8px 0"><span class="muted">Image generator for this step:</span>${providerSelect((d.project.policy.imageProviders || {})[sid], 'id="stepGen" style="max-width:260px"')}</div>` : ''}
       <div id="items"></div>
       <div id="slots"></div>
       <div id="friendly">${friendly(sid, shown)}</div>
@@ -271,6 +279,10 @@ async function stepPage(pid, sid) {
       const vs = await api(`/api/projects/${pid}/steps/${sid}/versions`);
       $('#vers').innerHTML = `<h2>Versions</h2>${vs.length ? `<table>${vs.map((v) => `<tr><td>v${v.version}</td><td>${v.source === 'you' ? 'You' : 'AI'}</td><td>${new Date(v.created_at).toLocaleString()}</td><td><button class="btn sm" data-v="${v.version}">Restore</button></td></tr>`).join('')}</table>` : '<p class="muted">No approved versions yet.</p>'}`;
       $('#vers').querySelectorAll('[data-v]').forEach((b) => b.addEventListener('click', guard(async () => { await post(`/api/projects/${pid}/steps/${sid}/restore/${b.dataset.v}`); toast('Restored; later steps are now out of date'); draw(); })));
+    });
+    if ($('#stepGen')) $('#stepGen').onchange = guard(async () => {
+      await api(`/api/projects/${pid}`, { method: 'PATCH', body: JSON.stringify({ policy: { imageProviders: { ...(d.project.policy.imageProviders || {}), [sid]: $('#stepGen').value } } }) });
+      toast('Saved: new images in this step use this generator');
     });
     editor(pid, sid, s, d);
     itemOverrides(pid, sid, def, d, mode);
@@ -369,9 +381,24 @@ async function gallery(pid, sid) {
   const tile = (a) => {
     const src = `/api/assets/${a.id}/file`;
     const m = a.kind === 'image' ? `<img loading="lazy" src="${src}">` : a.kind === 'video' ? `<video preload="none" controls src="${src}"></video>` : a.kind === 'audio' ? `<audio preload="none" controls src="${src}"></audio>` : `<div style="padding:10px"><a class="link" href="${src}?download=1">Download file</a></div>`;
-    return `<div class="tile ${a.chosen ? 'chosen' : ''}">${m}<div class="meta">${a.source === 'you' ? 'Yours' : esc(a.provider || '')}${a.cost > 0 ? ` · ${money(a.cost)}` : ''}<span class="spacer"></span>${a.chosen ? '<b style="color:var(--accent)">Chosen</b>' : `<button class="btn sm" data-choose="${a.id}">Use this</button>`}</div></div>`;
+    const who = a.source === 'you' ? 'Yours' : (catalog.imageProviders.find((p) => p.id === a.provider) || {}).label || a.provider || '';
+    return `<div class="tile ${a.chosen ? 'chosen' : ''}">${m}<div class="meta">${esc(who)}${a.cost > 0 ? ` · ${money(a.cost)}` : ''}<span class="spacer"></span>${a.chosen ? '<b style="color:var(--accent)">Chosen</b>' : `<button class="btn sm" data-choose="${a.id}">Use this</button>`}</div></div>`;
   };
-  box.innerHTML = Object.entries(groups).slice(0, 200).map(([ref, list]) => `<h3>${esc(ref)} <label class="btn sm" style="margin-left:8px">Upload my own<input type="file" data-ref="${esc(ref)}" hidden></label></h3><div class="gallery">${list.map(tile).join('')}</div>`).join('');
+  const def = catalog.steps.find((x) => x.id === sid);
+  const proj = await api(`/api/projects/${pid}`);
+  const cur = (proj.project.policy.imageProviders || {})[sid];
+  const gen = (ref, list) => (def.images && list.some((a) => a.kind === 'image') ? `<details class="gen"><summary class="btn sm" style="margin-left:8px">Generate another</summary>
+    <div class="card" style="margin:8px 0"><div class="row">${providerSelect(cur, `data-genp="${esc(ref)}" style="max-width:240px"`)}<button class="btn sm primary" data-gen="${esc(ref)}">Generate</button><span class="muted small">Switch generators as often as you like, then press "Use this" on the one you want.</span></div>
+    <textarea rows="3" data-genprompt="${esc(ref)}" style="margin-top:8px">${esc((list.filter((a) => a.prompt).slice(-1)[0] || {}).prompt || '')}</textarea></div></details>` : '');
+  box.innerHTML = Object.entries(groups).slice(0, 200).map(([ref, list]) => `<h3>${esc(ref)} <label class="btn sm" style="margin-left:8px">Upload my own<input type="file" data-ref="${esc(ref)}" hidden></label>${gen(ref, list)}</h3><div class="gallery">${list.map(tile).join('')}</div>`).join('');
+  box.querySelectorAll('button[data-gen]').forEach((b) => b.addEventListener('click', guard(async () => {
+    const ref = b.dataset.gen;
+    b.disabled = true; b.textContent = 'Generating…';
+    try {
+      await post(`/api/projects/${pid}/steps/${sid}/generate`, { ref, provider: box.querySelector(`[data-genp="${CSS.escape(ref)}"]`).value, prompt: box.querySelector(`[data-genprompt="${CSS.escape(ref)}"]`).value });
+      toast('New image added'); gallery(pid, sid);
+    } finally { b.disabled = false; b.textContent = 'Generate'; }
+  })));
   box.querySelectorAll('[data-choose]').forEach((b) => b.addEventListener('click', guard(async () => { await post(`/api/projects/${pid}/assets/${b.dataset.choose}/choose`); gallery(pid, sid); })));
   box.querySelectorAll('input[type=file]').forEach((inp) => inp.addEventListener('change', guard(async () => {
     const fd = new FormData();
@@ -414,7 +441,7 @@ async function consent() {
 // ------------------------------------------------------------------ settings and rights
 async function settings() {
   const { keys } = await api('/api/keys');
-  view.innerHTML = `<h1>Settings</h1><div class="muted">API keys. A key saved here overrides the server's environment variable and is stored encrypted. Adding a key re-runs steps that were waiting for it.</div>
+  view.innerHTML = `<h1>Settings</h1>${keysNote()}<div class="muted">API keys. A key saved here overrides the server's environment variable and is stored encrypted. Adding a key re-runs steps that were waiting for it.</div>
   <h2>API keys</h2><table>${keys.map((k) => `<tr><td><b>${esc(k.label)}</b><br><span class="muted small">${k.env} · using ${k.using === 'override' ? `saved key ${k.overrideTail}` : k.using === 'default' ? `server key ${k.defaultTail}` : 'nothing'}</span></td>
     <td><input type="password" data-k="${k.id}" placeholder="Paste a key"></td><td><button class="btn sm" data-save="${k.id}">Save</button> ${k.hasOverride ? `<button class="btn sm" data-del="${k.id}">Remove</button>` : ''}</td></tr>`).join('')}</table>`;
   view.querySelectorAll('[data-save]').forEach((b) => b.addEventListener('click', guard(async () => {

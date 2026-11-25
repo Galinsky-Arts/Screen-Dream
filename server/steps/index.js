@@ -49,9 +49,11 @@ const CATALOG = [
 
 const runners = { ...plan, ...make };
 // Steps whose Manual toggle can also be set per role or per scene, while the rest stays Auto.
+// Steps that generate images; each can use its own image generator (default ChatGPT).
+const IMAGE_STEPS = new Set(['T9', 'T13', 'T14', 'T17', 'T20', 'T35']);
 const ITEMS = { T9: 'role', T11: 'role', T12: 'role', T16: 'scene', T17: 'scene', T20: 'scene', T21: 'scene', T22: 'scene', T23: 'scene', T24: 'scene', T25: 'scene', T31: 'scene' };
 const STEPS = CATALOG.map(([id, stage, name, deps, manual, auto, manualText]) => ({
-  id, stage, stageName: STAGES[stage], name, deps, manual, autoText: auto, manualText, items: ITEMS[id] || null,
+  id, stage, stageName: STAGES[stage], name, deps, manual, autoText: auto, manualText, items: ITEMS[id] || null, images: IMAGE_STEPS.has(id),
   media: !!(runners[id] && runners[id].media),
   runner: runners[id],
 }));
@@ -67,4 +69,4 @@ function descendants(id) {
   return out;
 }
 
-module.exports = { STEPS, BY_ID, STAGES, ORDER, RENDER_STEPS, descendants };
+module.exports = { IMAGE_STEPS, STEPS, BY_ID, STAGES, ORDER, RENDER_STEPS, descendants };

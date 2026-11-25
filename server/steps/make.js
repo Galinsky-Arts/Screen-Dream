@@ -6,7 +6,7 @@ const fal = require('../providers/fal');
 const eleven = require('../providers/elevenlabs');
 const omega = require('../providers/omega');
 const media = require('../media');
-const { chunk, scriptOf } = require('./plan');
+const { chunk, scriptOf, imageBlock } = require('./plan');
 
 const shotsInScope = (ctx) => ctx.get('T16').shots.filter((s) => ctx.inScope(s.scene));
 const b64 = (file) => fs.readFileSync(file).toString('base64');
@@ -19,16 +19,16 @@ function wardrobe(ctx, charId, scene) {
   return look ? look.description : (c ? c.wardrobe : '');
 }
 
-// Reference images for a shot: each character's chosen design (or your capture) and the set plate.
+// Reference images for a shot (assets): each character's chosen design (or your capture) and the set plate.
 async function refsFor(ctx, sh) {
-  const urls = [];
+  const refs = [];
   for (const id of sh.characters.slice(0, 4)) {
     const a = await ctx.chosen(`char:${id}`) || ((ctx.get('T10').cast[id] || {}).performer === 'you' ? (await ctx.assets('capture:')).find((x) => x.kind === 'image') : null);
-    if (a) urls.push(ctx.publicUrl(a));
+    if (a) refs.push(a);
   }
   const set = await ctx.chosen(`set:${sh.set}`);
-  if (set) urls.push(ctx.publicUrl(set));
-  return urls;
+  if (set) refs.push(set);
+  return refs;
 }
 
 function shotPrompt(ctx, sh, extra = '') {
@@ -79,8 +79,7 @@ const T20 = {
     await ctx.pool(shots, async (sh) => {
       if (!(await ctx.assets(`key:${sh.id}`)).length) {
         const prompt = `Cinematic film still, final quality. ${shotPrompt(ctx, sh)}`;
-        const r = await fal.reference(prompt, await refsFor(ctx, sh), { aspect: ctx.aspect() });
-        const a = await ctx.asset({ ref: `key:${sh.id}`, kind: 'image', url: r.url, provider: 'fal', model: r.model, prompt, cost: r.cost });
+        const a = await ctx.genImage({ ref: `key:${sh.id}`, prompt, aspect: ctx.aspect(), refs: await refsFor(ctx, sh) });
         await ctx.choose(a.id);
       }
       if (++n % 5 === 0) await ctx.status(`Keyframes: ${n}/${shots.length}`);
@@ -190,7 +189,7 @@ const T25 = {
         const frame = await media.frameAt(await ctx.localPath(pic), Math.min(1.5, (sh.seconds || 4) / 2), path.join(dir, 'f.jpg'));
         const content = [{ type: 'text', text: `Shot ${sh.id}: ${sh.action}. Characters: ${sh.characters.join(', ')}. Wardrobe: ${sh.characters.map((c) => `${c}: ${wardrobe(ctx, c, sh.scene)}`).join('; ')}. First image is a frame from the shot; the rest are the character and set references.` },
           { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64(frame) } }];
-        for (const u of (await refsFor(ctx, sh)).slice(0, 4)) content.push({ type: 'image', source: { type: 'url', url: u } });
+        for (const a of (await refsFor(ctx, sh)).slice(0, 4)) content.push(await imageBlock(ctx, a));
         fs.rmSync(dir, { recursive: true, force: true });
         let d;
         try {
@@ -529,8 +528,7 @@ Pick up to 12 shots for a trailer that sells the film without giving away the en
     const wav = await media.mix(cue ? [{ file: await ctx.localPath(cue), at: 0, gain: -4 }] : [], len, path.join(dir, 't.wav'));
     const trailer = await media.mux(vid, wav, path.join(dir, 'trailer.mp4'));
     const t = await ctx.asset({ ref: 'trailer', kind: 'video', file: trailer, ext: '.mp4', provider: 'ffmpeg', duration_ms: Math.round(len * 1000) });
-    const r = await fal.image(`Theatrical film poster. ${d.poster} Title text: "${ctx.title()}". ${ctx.get('T15').style_prompt}`, { aspect: '3:4' });
-    const p = await ctx.asset({ ref: 'poster', kind: 'image', url: r.url, provider: 'fal', model: r.model, prompt: d.poster, cost: r.cost });
+    const p = await ctx.genImage({ ref: 'poster', prompt: `Theatrical film poster. ${d.poster} Title text: "${ctx.title()}". ${ctx.get('T15').style_prompt}`, aspect: '3:4' });
     await ctx.choose(p.id);
     fs.rmSync(dir, { recursive: true, force: true });
     return { output: { tagline: d.tagline, trailer: t.id, poster: p.id } };
@@ -603,4 +601,4 @@ Find people and outlets likely to cover or champion this film: critics and write
   },
 };
 
-module.exports = { T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31, T32, T33, T34, T35, T36, T37, T38 };
+module.exports = { refsFor, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31, T32, T33, T34, T35, T36, T37, T38 };
