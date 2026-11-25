@@ -20,6 +20,7 @@ const RIGHTS = require('./rights');
 const images = require('./providers/images');
 const { refsFor } = require('./steps/make');
 const { resemblanceCheck } = require('./steps/plan');
+const { createGate } = require('./gate');
 
 const PORT = Number(process.env.PORT || 3000);
 const APP_PASSWORD = process.env.APP_PASSWORD || '';
@@ -27,6 +28,14 @@ const upload = multer({ dest: path.join(os.tmpdir(), 'sd-uploads'), limits: { fi
 
 const app = express();
 app.set('trust proxy', 1);
+// Pre-launch password gate (SITE_PASSWORD), outermost so it runs before body parsing, routes and static.
+// Exempt: the Render health check, and the HMAC-signed, expiring /m/:id media links that providers
+// (fal, Claude vision) fetch server-side without cookies; that route checks its own signature.
+app.use(createGate({
+  siteName: 'screendream',
+  healthPath: '/healthz',
+  exempt: [(req, pathname) => (req.method === 'GET' || req.method === 'HEAD') && /^\/m\/[^/]+$/.test(pathname)],
+}));
 app.use(express.json({ limit: '20mb' }));
 app.use(cookieParser());
 
