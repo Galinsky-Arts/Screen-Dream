@@ -7,8 +7,9 @@
   "scripts": {
     "start": "node server/index.js",
     "check": "node scripts/check-syntax.js",
+    "test:gate": "node test/gate.js",
     "test:smoke": "node test/smoke.js",
-    "test": "npm run check && npm run test:smoke"
+    "test": "npm run check && npm run test:gate && npm run test:smoke"
   },
   "engines": {
     "node": ">=20"
