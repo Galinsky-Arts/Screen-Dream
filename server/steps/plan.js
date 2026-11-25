@@ -3,6 +3,7 @@
 const S = require('./schema');
 const fal = require('../providers/fal');
 const eleven = require('../providers/elevenlabs');
+const voiceProviders = require('../providers/voices');
 const media = require('../media');
 const fs = require('fs');
 const path = require('path');
@@ -278,8 +279,9 @@ const T11 = {
   async run(ctx) {
     const chars = ctx.get('T8').characters.filter((c) => c.size !== 'extra');
     const cast = ctx.get('T10').cast;
-    const lib = await eleven.voices();
-    if (!lib.length) throw new Error('The ElevenLabs account has no voices to choose from');
+    const vp = voiceProviders.get(ctx.policy.voiceProvider);
+    const lib = await vp.voices();
+    if (!lib.length) throw new Error(`${vp.label} returned no voices to choose from`);
     const voices = { ...((ctx.progress && ctx.progress.voices) || {}) };
     for (const c of chars) {
       if (voices[c.id] || !cast[c.id] || cast[c.id].performer !== 'you') continue;
@@ -288,7 +290,7 @@ const T11 = {
       const samples = (await ctx.assets('capture:')).filter((a) => a.kind === 'audio');
       if (!samples.length) throw new Error('Upload a voice recording on the Consent page to clone your voice');
       const bufs = await Promise.all(samples.map(async (s) => fs.readFileSync(await ctx.localPath(s))));
-      voices[c.id] = { voice_id: await eleven.cloneVoice(`ScreenDream – ${c.name}`, bufs), name: 'Your voice' };
+      voices[c.id] = { provider: vp.id, voice_id: await vp.cloneVoice(`ScreenDream – ${c.name}`, bufs), name: 'Your voice' };
       await ctx.save({ voices });
     }
     const todo = chars.filter((c) => !(c.id in voices));
@@ -302,11 +304,11 @@ ${lib.slice(0, 120).map((v) => `${v.voice_id}: ${v.name} ${JSON.stringify(v.labe
       S.obj({ picks: S.arr(S.obj({ id: S.str, voice_id: S.str })) }), { effort: 'medium' });
       for (const p of d.picks) {
         const v = lib.find((x) => x.voice_id === p.voice_id) || lib[0];
-        if (todo.find((c) => c.id === p.id)) voices[p.id] = { voice_id: v.voice_id, name: v.name };
+        if (todo.find((c) => c.id === p.id)) voices[p.id] = { provider: vp.id, voice_id: v.voice_id, name: v.name };
       }
-      for (const c of todo) if (!voices[c.id]) voices[c.id] = { voice_id: lib[0].voice_id, name: lib[0].name };
+      for (const c of todo) if (!voices[c.id]) voices[c.id] = { provider: vp.id, voice_id: lib[0].voice_id, name: lib[0].name };
     }
-    return { output: { voices, library: lib.slice(0, 200) } };
+    return { output: { provider: vp.id, voices, library: lib.slice(0, 200) } };
   },
 };
 
@@ -466,7 +468,7 @@ const T19 = {
     const est = {
       keyframes: inScope.length * fal.PRICE.reference,
       video: inScope.length * takes * fal.PRICE.video5s * 1.3,
-      dialogue: (chars / 1000) * eleven.PRICE.ttsPerK,
+      dialogue: (chars / 1000) * voiceProviders.get(ctx.policy.voiceProvider).PRICE.ttsPerK * (1 + (ctx.intake.dub_languages || []).length),
       lipsync: lipsec * fal.PRICE.lipsyncPerSec,
       sound: new Set(inScope.map((s) => s.scene)).size * eleven.PRICE.sfx,
       claude_post: 3,

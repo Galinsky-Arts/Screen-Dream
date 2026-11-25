@@ -72,6 +72,7 @@ app.get('/api/rights', (req, res) => res.json(RIGHTS));
 
 app.get('/api/catalog', (req, res) => res.json({
   imageProviders: images.list(),
+  voiceProviders: Object.values(require('./providers/voices').PROVIDERS).map((p) => ({ id: p.id, label: p.label, ready: keys.has(p.id) })),
   sharedKeysNote: process.env.SHARED_KEYS_NOTE || null,
   stages: STAGES,
   steps: STEPS.map(({ runner, ...s }) => s),

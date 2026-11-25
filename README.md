@@ -34,7 +34,8 @@ Only your own face and voice can be used, and only under a signed consent record
 | ChatGPT images (OpenAI) | `OPENAI_API_KEY` | Default image generator: designs, sets, props, storyboards, keyframes (reference images via the edits endpoint), poster. Model: `OPENAI_IMAGE_MODEL` (default `gpt-image-1`) |
 | Grok Imagine (xAI) | `XAI_API_KEY` | Optional image generator. Model: `XAI_IMAGE_MODEL` (default `grok-2-image`) |
 | fal.ai | `FAL_KEY` | Image-to-video, lip sync, optional upscaling and motion transfer; also selectable as an image generator (FLUX / Nano Banana) |
-| ElevenLabs | `ELEVENLABS_API_KEY` | Voice library, cloning your own voice, dialogue, ambience |
+| Fish Audio | `FISH_API_KEY` | Default voice service: voice library, cloning your own voice (private model), dialogue, dubs. TTS model `FISH_TTS_MODEL` (default `s1`) |
+| ElevenLabs | `ELEVENLABS_API_KEY` | Ambience sound effects (optional: without it the film has no generated ambience); also selectable as the voice service |
 | Instrument Omega | `OMEGA_URL`, `OMEGA_PASSWORD` | Score cues and songs, made in Omega and downloaded |
 
 Keys can also be saved in Settings (encrypted with `APP_SECRET`). A step that needs a missing key shows *Needs a key* and restarts when the key is added.
@@ -75,7 +76,7 @@ SCREENDREAM_SERVICE_ID=srv-... scripts/deploy-render.sh                  # later
 
 Working and tested against mocks: the whole pipeline, Auto/Manual per step, gates, versions and staleness, consent, uploads, budget cap, the ffmpeg animatic, edit, grade, mix, titles, subtitles, trailer and deliverables.
 
-Not yet verified against the live services: the OpenAI, xAI, fal, ElevenLabs and Omega adapters follow those APIs' documented shapes but have only run against the mocks. Check the fal model ids and each model's license before a commercial release (Usage rights page).
+Not yet verified against the live services: the OpenAI, xAI, fal, Fish Audio, ElevenLabs and Omega adapters follow those APIs' documented shapes but have only run against the mocks. Check the fal model ids and each model's license before a commercial release (Usage rights page).
 
 Not built yet: signed C2PA Content Credentials (the AI disclosure is in the file metadata and the credits), a licensed face-match database for the resemblance screen (it currently asks Claude's vision model), automatic festival submission and sending pitches. The motion-transfer adapter is off until a fal model id is chosen (`FAL_MOTION_MODEL`), since input names differ between models.
 

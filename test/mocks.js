@@ -23,7 +23,7 @@ ff(['-f', 'lavfi', '-i', 'sine=f=220:d=20', '-c:a', 'libmp3lame', path.join(DIR,
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use('/files', express.static(DIR));
-const log = { claude: [], fal: [], eleven: [], omega: [], openai: [], xai: [] };
+const log = { claude: [], fal: [], eleven: [], omega: [], openai: [], xai: [], fish: [] };
 app.get('/log', (req, res) => res.json(log));
 
 // ------------------------------------------------------------------ Claude
@@ -57,7 +57,7 @@ function answer(role, text, schema) {
     { id: 'ana', name: 'Ana', size: 'lead', age: '30', gender: 'woman', description: 'd', look: 'l', wardrobe: 'coat', voice: 'v', mannerisms: 'm', arc: 'a', scenes: [1, 2], dies_on_screen: false },
     { id: 'ben', name: 'Ben', size: 'supporting', age: '50', gender: 'man', description: 'd', look: 'l', wardrobe: 'suit', voice: 'v', mannerisms: 'm', arc: 'a', scenes: [1, 2], dies_on_screen: true }];
   if (/casting the producer/.test(role)) { d.id = 'ben'; d.reason = 'fits'; }
-  if (/\(voices\)/.test(role)) d.picks = [{ id: 'ana', voice_id: 'v1' }, { id: 'ben', voice_id: 'v2' }];
+  if (/\(voices\)/.test(role)) d.picks = [{ id: 'ana', voice_id: /f1:/.test(text) ? 'f1' : 'v1' }, { id: 'ben', voice_id: /f2:/.test(text) ? 'f2' : 'v2' }];
   if (/\(sets\)/.test(role)) d.sets = [{ id: 'room', name: 'Room', description: 'd', layout: 'l', scenes: [1, 2] }];
   if (/Prop master/.test(role)) d.props = [{ id: 'tape', name: 'Tape', description: 'd', scenes: [2] }];
   if (/look book/.test(role)) d.grade = { contrast: 1.05, saturation: 1.1, brightness: 0, warmth: 0.3 };
@@ -120,6 +120,11 @@ app.get('/omega/api/songs', (r, res) => res.json({ songs: Array.from({ length: o
 app.get('/omega/api/songs/:id/download', (r, res) => res.sendFile(path.join(DIR, 'music.mp3')));
 app.post('/omega/api/releases', (r, res) => { log.omega.push({ release: r.body }); res.json({ id: 9, title: r.body.title }); });
 app.get('/omega/api/albums/:id', (r, res) => res.json({ id: Number(r.params.id), title: 'Death by Discography', premise: 'A comic whodunit.', message: 'm', constraints: 'c' }));
+
+// ------------------------------------------------------------------ Fish Audio
+app.get('/fish/model', (r, res) => res.json({ total: 2, items: [{ _id: 'f1', title: 'Fish One', tags: ['female'], languages: ['en'] }, { _id: 'f2', title: 'Fish Two', tags: ['male'], languages: ['en'] }] }));
+app.post('/fish/model', require('multer')().array('voices', 10), (r, res) => { log.fish.push({ clone: true, files: (r.files || []).length, visibility: r.body.visibility }); res.json({ _id: 'fishclone1' }); });
+app.post('/fish/v1/tts', (r, res) => { log.fish.push({ tts: r.body.reference_id, model: r.get('model') }); res.sendFile(path.join(DIR, 'speech.mp3')); });
 
 // ------------------------------------------------------------------ OpenAI images and xAI images
 const b64img = () => fs.readFileSync(path.join(DIR, 'img.png')).toString('base64');

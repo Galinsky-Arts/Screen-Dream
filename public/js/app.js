@@ -39,6 +39,9 @@ const pill = (s) => `<span class="pill ${s}">${STATUS[s] || s}</span>`;
 function providerSelect(current, attrs) {
   return `<select ${attrs}>${catalog.imageProviders.map((p) => `<option value="${p.id}" ${p.id === (current || 'openai') ? 'selected' : ''}>${esc(p.label)}${p.ready ? '' : ' (no key yet)'}</option>`).join('')}</select>`;
 }
+function voiceSelect(current, attrs) {
+  return `<select ${attrs}>${catalog.voiceProviders.map((p) => `<option value="${p.id}" ${p.id === (current || 'fish') ? 'selected' : ''}>${esc(p.label)}${p.ready ? '' : ' (no key yet)'}</option>`).join('')}</select>`;
+}
 const keysNote = () => (catalog.sharedKeysNote ? `<div class="note warn">${esc(catalog.sharedKeysNote)}</div>` : '');
 
 // ------------------------------------------------------------------ router
@@ -116,6 +119,7 @@ async function newFilm() {
     <label class="field"><span>Render only the first N scenes (blank = all)</span><input id="g_max" type="number" min="1"></label>
     <label class="field"><span>Budget cap, USD (blank = no cap)</span><input id="g_cap" type="number" min="1"></label>
     <label class="field"><span>Preview window for "Notify me" steps (hours, 0 = none)</span><input id="g_hours" type="number" min="0" value="${policy.notifyHours}"></label>
+    <label class="field"><span>Voices (dialogue, dubs, your cloned voice)</span>${voiceSelect(policy.voiceProvider, 'id="g_voice"')}</label>
     <label class="field"><span>Rehearsal</span><select id="g_reh"><option value="1">On: nothing is submitted or sent</option><option value="0">Off</option></select></label>
   </div>
   <div class="field"><span>Notify me at (these steps pause for your preview even in Auto)</span><div class="row" id="notifyBox"></div></div>
@@ -154,6 +158,7 @@ async function newFilm() {
     intake.subtitle_languages = v('#f_subtitle_languages').split(',').map((x) => x.trim()).filter(Boolean);
     if ($('#omegaId').value.trim()) intake.omega_album = $('#omegaId').value.trim();
     policy.tier = v('#g_tier'); policy.scope = v('#g_scope'); policy.maxScenes = v('#g_max') ? Number(v('#g_max')) : null;
+    policy.voiceProvider = v('#g_voice');
     policy.notifyHours = Number(v('#g_hours') || 0); policy.rehearsal = v('#g_reh') === '1';
     policy.notify = [...document.querySelectorAll('#notifyBox input:checked')].map((x) => x.value);
     const r = await post('/api/projects', { intake, policy, budgetCap: v('#g_cap') });
@@ -264,6 +269,7 @@ async function stepPage(pid, sid) {
         <button class="btn" id="versions">Versions</button>
       </div>
       ${def.images ? `<div class="row" style="margin:8px 0"><span class="muted">Image generator for this step:</span>${providerSelect((d.project.policy.imageProviders || {})[sid], 'id="stepGen" style="max-width:260px"')}</div>` : ''}
+      ${sid === 'T11' ? `<div class="row" style="margin:8px 0"><span class="muted">Voice service for this film:</span>${voiceSelect(d.project.policy.voiceProvider, 'id="stepVoice" style="max-width:240px"')}<span class="muted small">Changing it after voices exist: press Run again to re-cast voices.</span></div>` : ''}
       <div id="items"></div>
       <div id="slots"></div>
       <div id="friendly">${friendly(sid, shown)}</div>
@@ -279,6 +285,10 @@ async function stepPage(pid, sid) {
       const vs = await api(`/api/projects/${pid}/steps/${sid}/versions`);
       $('#vers').innerHTML = `<h2>Versions</h2>${vs.length ? `<table>${vs.map((v) => `<tr><td>v${v.version}</td><td>${v.source === 'you' ? 'You' : 'AI'}</td><td>${new Date(v.created_at).toLocaleString()}</td><td><button class="btn sm" data-v="${v.version}">Restore</button></td></tr>`).join('')}</table>` : '<p class="muted">No approved versions yet.</p>'}`;
       $('#vers').querySelectorAll('[data-v]').forEach((b) => b.addEventListener('click', guard(async () => { await post(`/api/projects/${pid}/steps/${sid}/restore/${b.dataset.v}`); toast('Restored; later steps are now out of date'); draw(); })));
+    });
+    if ($('#stepVoice')) $('#stepVoice').onchange = guard(async () => {
+      await api(`/api/projects/${pid}`, { method: 'PATCH', body: JSON.stringify({ policy: { voiceProvider: $('#stepVoice').value } }) });
+      toast('Saved');
     });
     if ($('#stepGen')) $('#stepGen').onchange = guard(async () => {
       await api(`/api/projects/${pid}`, { method: 'PATCH', body: JSON.stringify({ policy: { imageProviders: { ...(d.project.policy.imageProviders || {}), [sid]: $('#stepGen').value } } }) });

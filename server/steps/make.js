@@ -5,6 +5,8 @@ const S = require('./schema');
 const fal = require('../providers/fal');
 const eleven = require('../providers/elevenlabs');
 const omega = require('../providers/omega');
+const voiceProviders = require('../providers/voices');
+const keys = require('../keys');
 const media = require('../media');
 const { chunk, scriptOf, imageBlock } = require('./plan');
 
@@ -139,12 +141,12 @@ const T23 = {
         if (!a) {
           const v = voices[l.character] || fallback;
           if (!v) throw new Error('No voices are set up (T11)');
-          const r = await eleven.speak(v.voice_id, l.text.replace(/^~\s*/, ''));
+          const r = await voiceProviders.speak(v, l.text.replace(/^~\s*/, ''));
           const dir = media.tmpDir();
           const f = path.join(dir, 'l.mp3');
           fs.writeFileSync(f, r.buf);
           const ms = Math.round((await media.duration(f)) * 1000);
-          a = await ctx.asset({ ref: `line:${sh.id}:${i}`, kind: 'audio', buf: r.buf, ext: '.mp3', provider: 'elevenlabs', model: r.model, prompt: l.text, cost: r.cost, duration_ms: ms, meta: { character: l.character } });
+          a = await ctx.asset({ ref: `line:${sh.id}:${i}`, kind: 'audio', buf: r.buf, ext: '.mp3', provider: v.provider || 'elevenlabs', model: r.model, prompt: l.text, cost: r.cost, duration_ms: ms, meta: { character: l.character } });
           await ctx.choose(a.id);
           fs.rmSync(dir, { recursive: true, force: true });
         }
@@ -351,6 +353,7 @@ ${withSongs.map((s) => `Scene ${s.n} — ${s.song}\n${(script.scenes.find((x) =>
 const T31 = {
   media: true,
   async run(ctx) {
+    if (!keys.has('elevenlabs')) return { output: { scenes: [], note: 'No ElevenLabs key, so the film has no generated ambience. Add ELEVENLABS_API_KEY and run this step again to add it.' } };
     const scenes = [...new Set(ctx.get('T26').edl.map((e) => e.scene))];
     let prompts = ctx.progress && ctx.progress.prompts;
     if (!prompts) {
@@ -489,8 +492,8 @@ const T34 = {
         let a = await ctx.chosen(`dub:${lang}:${l.shot}:${l.i}`);
         if (!a) {
           const v = voices[l.character] || fallback;
-          const r = await eleven.speak(v.voice_id, tr[lang][l.k].replace(/^♪\s*/, ''));
-          a = await ctx.asset({ ref: `dub:${lang}:${l.shot}:${l.i}`, kind: 'audio', buf: r.buf, ext: '.mp3', provider: 'elevenlabs', model: r.model, prompt: tr[lang][l.k], cost: r.cost });
+          const r = await voiceProviders.speak(v, tr[lang][l.k].replace(/^♪\s*/, ''));
+          a = await ctx.asset({ ref: `dub:${lang}:${l.shot}:${l.i}`, kind: 'audio', buf: r.buf, ext: '.mp3', provider: v.provider || 'elevenlabs', model: r.model, prompt: tr[lang][l.k], cost: r.cost });
           await ctx.choose(a.id);
         }
         events.push({ file: await ctx.localPath(a), at: Math.max(0, l.at), gain: 0 });

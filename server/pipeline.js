@@ -3,6 +3,7 @@
 const { query } = require('./db');
 const { STEPS, BY_ID, ORDER, RENDER_STEPS, IMAGE_STEPS, descendants } = require('./steps');
 const images = require('./providers/images');
+const voiceProviders = require('./providers/voices');
 const claude = require('./claude');
 const storage = require('./storage');
 
@@ -21,6 +22,7 @@ function defaultPolicy() {
     scope: 'full',      // plan | full
     maxScenes: null,    // render only the first N scenes (null = all)
     imageProviders: Object.fromEntries([...IMAGE_STEPS].map((id) => [id, images.DEFAULT])), // openai | xai | fal
+    voiceProvider: voiceProviders.DEFAULT, // fish | elevenlabs
     overrides: {},      // per-item Manual inside an Auto step: { T11: { roles: ['ana'] }, T22: { scenes: [3] } }
   };
 }
@@ -39,6 +41,7 @@ function cleanPolicy(p = {}) {
     scope: ['plan', 'full'].includes(p.scope) ? p.scope : d.scope,
     maxScenes: p.maxScenes ? Math.max(1, Math.round(Number(p.maxScenes))) : null,
     overrides: cleanOverrides(p.overrides),
+    voiceProvider: voiceProviders.PROVIDERS[p.voiceProvider] ? p.voiceProvider : voiceProviders.DEFAULT,
     imageProviders: Object.fromEntries([...IMAGE_STEPS].map((id) => [id, images.PROVIDERS[(p.imageProviders || {})[id]] ? p.imageProviders[id] : images.DEFAULT])),
   };
 }

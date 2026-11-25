@@ -52,6 +52,7 @@ async function waitStep(id, step, statuses, ms = 120000) {
     ANTHROPIC_API_KEY: 'test', ANTHROPIC_BASE_URL: `http://localhost:${MOCK}/anthropic`,
     OPENAI_API_KEY: 'test', OPENAI_BASE_URL: `http://localhost:${MOCK}/openai`, XAI_API_KEY: 'test', XAI_BASE_URL: `http://localhost:${MOCK}/xai`,
     FAL_KEY: 'test', FAL_QUEUE_URL: `http://localhost:${MOCK}/fal`, FAL_POLL_MS: '50', FAL_UPSCALE_MODEL: '',
+    FISH_API_KEY: 'test', FISH_BASE_URL: `http://localhost:${MOCK}/fish`,
     ELEVENLABS_API_KEY: 'test', ELEVENLABS_BASE_URL: `http://localhost:${MOCK}/eleven`,
     OMEGA_URL: `http://localhost:${MOCK}/omega`, OMEGA_PASSWORD: 'x', OMEGA_POLL_MS: '50',
     RENDER_WIDTH: '640', RENDER_HEIGHT: '360', FAL_MOTION_MODEL: 'fal-ai/test-motion',
@@ -81,7 +82,7 @@ async function waitStep(id, step, statuses, ms = 120000) {
   await api('/api/consents', { method: 'POST', body: JSON.stringify({ signed_name: 'Test Producer', roles: ['supporting', 'lead'], voice: true, death_depiction: 'ask', age_shift: 'ask', months: 12 }) });
   const { id } = await api('/api/projects', { method: 'POST', body: JSON.stringify({
     intake: { title: 'Smoke Film', concept: 'A two-scene test film about a missing tape.', format: 'short', runtime: 1, genre: 'comedy', likeness: 'supporting', your_name: 'Test Producer', your_age: 30, subtitle_languages: ['English', 'Spanish'], dub_languages: ['French'] },
-    policy: { notifyHours: 0, maxScenes: 2, modes: { T7: 'manual' }, imageProviders: { T17: 'fal' } },
+    policy: { notifyHours: 0, maxScenes: 2, modes: { T7: 'manual', T22: 'manual' }, imageProviders: { T17: 'fal' } },
     budgetCap: 500,
   }) });
 
@@ -116,7 +117,8 @@ async function waitStep(id, step, statuses, ms = 120000) {
   // Scene 2 of the video takes is Manual while the rest of T21 stays Auto.
   await api(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify({ policy: { overrides: { T21: { scenes: [2] } } } }) });
   // Your phone performance for a shot of your character.
-  d = await waitStep(id, 'T16', ['done']);
+  // Performance (T22) is Manual: it waits, so your phone performance is in before any take is made.
+  d = await waitStep(id, 'T22', ['review']);
   const slotList = await api(`/api/projects/${id}/steps/T22/slots`);
   assert.ok(slotList.length >= 1 && slotList[0].ref.startsWith('perf:'), 'performance slots for your shots');
   execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=s=320x240:r=24', '-t', '2', '-pix_fmt', 'yuv420p', path.join(os.tmpdir(), 'perf.mp4')]);
@@ -124,6 +126,9 @@ async function waitStep(id, step, statuses, ms = 120000) {
   pfd.append('ref', slotList[0].ref);
   pfd.append('file', new Blob([fs.readFileSync(path.join(os.tmpdir(), 'perf.mp4'))], { type: 'video/mp4' }), 'perf.mp4');
   assert.ok((await fetch(`${base}/api/projects/${id}/upload`, { method: 'POST', body: pfd, headers: { Cookie: cookie } })).ok);
+  await api(`/api/projects/${id}/steps/T22/run`, { method: 'POST' }); // AI draft of the direction notes
+  for (let i = 0; i < 100 && !(await api(`/api/projects/${id}`)).steps.T22.draft; i++) await sleep(300);
+  await api(`/api/projects/${id}/steps/T22/approve`, { method: 'POST', body: '{}' });
   d = await waitStep(id, 'T21', ['review'], 120000);
   assert.ok(/scenes 2 to Manual/.test(d.steps.T21.note), d.steps.T21.note);
   const takes2 = await api(`/api/projects/${id}/assets?ref=take:2A`);
@@ -160,7 +165,9 @@ async function waitStep(id, step, statuses, ms = 120000) {
 
   const log = await (await fetch(`http://localhost:${MOCK}/log`)).json();
   assert.ok(log.claude.every((c) => c.model === 'claude-opus-5-5' && c.fallbacks === 'default' && c.thinking.type === 'adaptive'));
-  assert.ok(log.eleven.some((e) => e.clone), 'your voice was cloned');
+  assert.ok(log.fish.some((e) => e.clone && e.visibility === 'private'), 'your voice was cloned privately on Fish Audio (the default)');
+  assert.ok(log.fish.filter((e) => e.tts).length >= 3, 'dialogue and the French dub spoken by Fish Audio');
+  assert.ok(log.eleven.some((e) => e.sfx) && !log.eleven.some((e) => e.tts), 'ElevenLabs only made ambience');
   assert.ok(log.omega.some((o) => o.type === 'instrumental') && log.omega.some((o) => o.type === 'song'), 'score and song ordered from Omega');
   assert.ok(log.fal.some((f) => /image-to-video/.test(f.model)) && log.fal.some((f) => /lipsync/.test(f.model)));
   assert.ok(log.fal.some((f) => f.model === 'fal-ai/test-motion'), 'your performance drove a take');
@@ -169,7 +176,7 @@ async function waitStep(id, step, statuses, ms = 120000) {
   assert.strictEqual(log.xai.length, 1);
   assert.ok(log.omega.some((o) => o.release && o.release.songIds.length >= 2), 'soundtrack release created in Omega');
   assert.ok(done.steps.T37.output.soundtrack.releaseId === 9);
-  console.log(`ok  providers: ${log.claude.length} Claude calls, ${log.fal.length} fal jobs, ${log.eleven.length} ElevenLabs calls, ${log.omega.length} Omega orders`);
+  console.log(`ok  providers: ${log.claude.length} Claude, ${log.openai.length} ChatGPT images, ${log.fal.length} fal, ${log.fish.length} Fish Audio, ${log.eleven.length} ElevenLabs, ${log.omega.length} Omega`);
   assert.ok(done.spent > 0);
   console.log(`ok  spend ledger: $${done.spent.toFixed(2)} (estimates)`);
 
