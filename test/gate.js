@@ -1,12 +1,33 @@
 // Tests for the pre-launch password gate (server/gate.js). No database or network needed.
 const assert = require('assert');
 const http = require('http');
-const { createGate, safeNext, cookieValue } = require('../server/gate');
+const { createGate, safeNext, cookieValue, glCookieValue, withFrameAncestors, DEFAULT_FRAME_ANCESTORS } = require('../server/gate');
 
 const PW = 'dummy-test-password';
 
+// App behind the gate; a few routes try to forbid framing or bring their own CSP.
+function appHandler(req, res) {
+  if (req.url === '/xfo') { res.setHeader('X-Frame-Options', 'DENY'); res.setHeader('Content-Security-Policy', "default-src 'self'; frame-ancestors 'none'"); return res.end('x'); }
+  if (req.url === '/sandbox') { res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'"); res.setHeader('X-Content-Type-Options', 'nosniff'); return res.end('s'); }
+  if (req.url === '/raw') { res.writeHead(200, { 'X-Frame-Options': 'SAMEORIGIN', 'Content-Type': 'text/plain' }); return res.end('r'); }
+  res.statusCode = 200; res.end('app');
+}
+
+const rawPost = (url, body, headers) => new Promise((resolve, reject) => {
+  const req = http.request(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers } }, (res) => {
+    res.resume(); resolve({ status: res.statusCode, cookies: res.headers['set-cookie'] || [] });
+  });
+  req.on('error', reject); req.end(body);
+});
+
+const FA = `frame-ancestors ${DEFAULT_FRAME_ANCESTORS}`;
+function framed(r, csp = FA) {
+  assert.strictEqual(r.headers.get('x-frame-options'), null, 'no X-Frame-Options');
+  assert.strictEqual(r.headers.get('content-security-policy'), csp);
+}
+
 function serve(gate) {
-  const server = http.createServer((req, res) => gate(req, res, () => { res.statusCode = 200; res.end('app'); }));
+  const server = http.createServer((req, res) => gate(req, res, () => appHandler(req, res)));
   return new Promise((resolve) => server.listen(0, () => resolve({ server, base: `http://localhost:${server.address().port}` })));
 }
 
@@ -18,13 +39,40 @@ function serve(gate) {
   }
   console.log('ok  next sanitising');
 
-  // gate off: zero behaviour change
+  // shared Galinsky Labs gate cookie test vector
+  assert.strictEqual(glCookieValue('correct horse'), 'v1.J34jDSt4S7FKFMON2hr8o5GShdqr_z_XOaky92MJk1g');
+  console.log('ok  gl_gate test vector');
+
+  assert.strictEqual(DEFAULT_FRAME_ANCESTORS, "'self' https://galinskylabs.com https://*.galinskylabs.com https://galinskylabs-portfolio.onrender.com");
+  assert.strictEqual(withFrameAncestors("default-src 'self'; frame-ancestors 'none'", 'X'), "default-src 'self'; frame-ancestors X");
+  assert.strictEqual(withFrameAncestors("sandbox; default-src 'none'", 'X'), "sandbox; default-src 'none'; frame-ancestors X");
+  console.log('ok  frame-ancestors replace/append keeps other directives');
+
+  // gate off: zero behaviour change apart from the framing headers
   {
     const { server, base } = await serve(createGate({ password: '' }));
-    assert.strictEqual((await fetch(`${base}/`, { headers: { Accept: 'text/html' }, redirect: 'manual' })).status, 200);
+    const r0 = await fetch(`${base}/`, { headers: { Accept: 'text/html' }, redirect: 'manual' });
+    assert.strictEqual(r0.status, 200);
+    framed(r0);
     assert.strictEqual((await fetch(`${base}/api/x`, { method: 'POST' })).status, 200);
+    framed(await fetch(`${base}/xfo`), `default-src 'self'; ${FA}`);
+    const rs = await fetch(`${base}/sandbox`);
+    framed(rs, `sandbox; default-src 'none'; ${FA}`);
+    assert.strictEqual(rs.headers.get('x-content-type-options'), 'nosniff');
+    framed(await fetch(`${base}/raw`));
     server.close();
-    console.log('ok  gate off');
+    console.log('ok  gate off (framing headers on every response)');
+  }
+
+  // FRAME_ANCESTORS env override
+  {
+    process.env.FRAME_ANCESTORS = "'self' https://example.test";
+    const { server, base } = await serve(createGate({ password: PW }));
+    framed(await fetch(`${base}/__gate`), "frame-ancestors 'self' https://example.test");
+    framed(await fetch(`${base}/api/x`), "frame-ancestors 'self' https://example.test");
+    server.close();
+    delete process.env.FRAME_ANCESTORS;
+    console.log('ok  FRAME_ANCESTORS override');
   }
 
   const exempt = [(req, p) => req.method === 'GET' && /^\/m\/[^/]+$/.test(p)];
@@ -69,11 +117,15 @@ function serve(gate) {
   assert.ok(page.includes('<title>Private preview</title>'));
   assert.ok(page.includes('autocomplete="current-password"') && page.includes('autocomplete="username"') && page.includes('value="screendream"'));
   assert.ok(!page.includes('<script>') && page.includes('/x&quot;&gt;&lt;script&gt;'));
-  console.log('ok  form page');
+  framed(r);
+  assert.ok(page.includes('<form method="post" action="/__gate">'));
+  framed(await fetch(`${base}/api/projects`));
+  framed(await fetch(`${base}/`, { headers: { Accept: 'text/html' }, redirect: 'manual' }));
+  console.log('ok  form page (frameable, no X-Frame-Options)');
 
-  const post = (body, ip) => fetch(`${base}/__gate`, {
+  const post = (body, ip, extra = {}) => fetch(`${base}/__gate`, {
     method: 'POST', redirect: 'manual',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Forwarded-For': `${ip}, 10.0.0.1` },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Forwarded-For': `${ip}, 10.0.0.1`, ...extra },
     body: new URLSearchParams(body).toString(),
   });
 
@@ -84,17 +136,42 @@ function serve(gate) {
   assert.strictEqual(r.headers.get('set-cookie'), null);
   console.log('ok  wrong password 401');
 
-  // correct password sets cookie and redirects to sanitised next
-  r = await post({ password: PW, next: '/films?a=1' }, '203.0.113.2');
+  // correct password (same-origin POST from inside the iframe) sets both cookies and redirects to sanitised next
+  r = await post({ password: PW, next: '/films?a=1' }, '203.0.113.2', { Origin: base, 'Sec-Fetch-Site': 'same-origin' });
   assert.strictEqual(r.status, 303);
   assert.strictEqual(r.headers.get('location'), '/films?a=1');
-  const sc = r.headers.get('set-cookie');
-  assert.ok(sc.startsWith(`${cookie};`));
-  for (const attr of ['HttpOnly', 'Secure', 'SameSite=Lax', 'Path=/', 'Max-Age=34560000']) assert.ok(sc.includes(attr), attr);
-  assert.ok(/^site_gate=v1\.[A-Za-z0-9_-]+;/.test(sc));
+  framed(r);
+  const gv = glCookieValue(PW);
+  assert.match(gv, /^v1\.[A-Za-z0-9_-]{43}$/);
+  assert.deepStrictEqual(r.headers.getSetCookie(), [
+    `gl_gate=${gv}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=None`,
+    `gl_gate_p=${gv}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=None; Partitioned`,
+  ]);
   r = await post({ password: PW, next: '//evil.com' }, '203.0.113.2');
   assert.strictEqual(r.headers.get('location'), '/');
-  console.log('ok  correct password sets cookie + 303');
+  console.log('ok  correct password sets gl_gate + gl_gate_p + 303');
+
+  for (const host of ['galinskylabs.com', 'screendream.galinskylabs.com:443']) {
+    const res = await rawPost(`${base}/__gate`, `password=${encodeURIComponent(PW)}`, { Host: host, 'X-Forwarded-For': '203.0.113.3' });
+    assert.strictEqual(res.status, 303);
+    assert.deepStrictEqual(res.cookies, [
+      `gl_gate=${gv}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=None; Domain=galinskylabs.com`,
+      `gl_gate_p=${gv}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=None; Partitioned`,
+    ], host);
+  }
+  for (const host of ['evilgalinskylabs.com', 'galinskylabs.com.evil.test', 'screendream.onrender.com']) {
+    const res = await rawPost(`${base}/__gate`, `password=${encodeURIComponent(PW)}`, { Host: host, 'X-Forwarded-For': '203.0.113.4' });
+    assert.ok(res.cookies.every((c) => !c.includes('Domain=')), host);
+  }
+  console.log('ok  Domain=galinskylabs.com only for galinskylabs.com hosts');
+
+  for (const c of [`gl_gate=${gv}`, `gl_gate_p=${gv}`, cookie, `gl_gate=v1.stale; gl_gate=${gv}`]) {
+    assert.strictEqual((await fetch(`${base}/api/projects`, { headers: { Cookie: `a=b; ${c}` } })).status, 200, c);
+  }
+  for (const c of [`gl_gate=${glCookieValue('other')}`, 'gl_gate_p=v1.nope', `gl_gate=${cookieValue(PW)}`, `site_gate=${gv}`]) {
+    assert.strictEqual((await fetch(`${base}/api/projects`, { headers: { Cookie: c } })).status, 401, c);
+  }
+  console.log('ok  gl_gate, gl_gate_p or legacy site_gate authorizes');
 
   // rate limit: 10 tries per 10 min per IP (first X-Forwarded-For hop)
   for (let i = 0; i < 10; i++) assert.strictEqual((await post({ password: 'wrong' }, '198.51.100.9')).status, 401);

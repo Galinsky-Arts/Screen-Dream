@@ -44,7 +44,7 @@ fal model ids are configurable: `FAL_IMAGE_MODEL` (default `fal-ai/flux/dev`), `
 
 Durable media: set `S3_BUCKET` (plus `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, optional `S3_PREFIX`, `S3_FORCE_PATH_STYLE=1`) to keep every upload and render in any S3-compatible store (Cloudflare R2, Backblaze B2, AWS S3). Without it, Render's free-plan disk is wiped on restart: generated media is re-downloaded from provider URLs, but your uploads and ffmpeg renders are lost.
 
-Other settings: `DATABASE_URL` (required), `MEDIA_CONCURRENCY` (parallel provider jobs inside a step, default 4), `APP_PASSWORD`, `APP_SECRET`, `PUBLIC_URL` (so providers can fetch your uploads), `MEDIA_DIR`, `RENDER_WIDTH`/`RENDER_HEIGHT` (default 1920×1080), `WORKER_CONCURRENCY`, `CLAUDE_MODEL`.
+Other settings: `DATABASE_URL` (required), `MEDIA_CONCURRENCY` (parallel provider jobs inside a step, default 4), `APP_PASSWORD`, `APP_SECRET`, `PUBLIC_URL` (so providers can fetch your uploads), `MEDIA_DIR`, `RENDER_WIDTH`/`RENDER_HEIGHT` (default 1920×1080), `WORKER_CONCURRENCY`, `CLAUDE_MODEL`, `SITE_PASSWORD` (pre-launch gate at `/__gate`; cookies `gl_gate` + `gl_gate_p`, SameSite=None so it works inside the galinskylabs.com portfolio iframe; the old `site_gate` cookie is still accepted), `FRAME_ANCESTORS` (CSP `frame-ancestors` on every response, no X-Frame-Options; default `'self' https://galinskylabs.com https://*.galinskylabs.com https://galinskylabs-portfolio.onrender.com`).
 
 ## Run locally
 

@@ -1,11 +1,17 @@
 // Pre-launch password gate. Controlled only by SITE_PASSWORD: unset or empty means the gate is off.
-// When on, every request needs the site_gate cookie except the health check, the gate's own
+// When on, every request needs a gate cookie (gl_gate, gl_gate_p or legacy site_gate) except the health check, the gate's own
 // /__gate routes and the exempt machine-to-machine paths. Sits in front of the app's own login
 // (APP_PASSWORD), which keeps working unchanged. Node built-ins only.
 const crypto = require('crypto');
 
-const COOKIE = 'site_gate';
-const MAX_AGE = 34560000; // seconds (400 days)
+const COOKIE = 'site_gate'; // legacy cookie: still accepted, no longer set
+// Shared Galinsky Labs gate cookies. SameSite=None so the login survives inside a cross-site iframe
+// on galinskylabs.com; gl_gate_p is the CHIPS (Partitioned) copy for browsers that block
+// third-party cookies. Either one authorizes.
+const GL_COOKIE = 'gl_gate';
+const GL_COOKIE_P = 'gl_gate_p';
+const GL_MAX_AGE = 31536000; // seconds (365 days)
+const DEFAULT_FRAME_ANCESTORS = "'self' https://galinskylabs.com https://*.galinskylabs.com https://galinskylabs-portfolio.onrender.com";
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_TRIES = 10;
 const FAIL_DELAY_MS = 500;
@@ -18,6 +24,10 @@ function cookieValue(password) {
   return `v1.${crypto.createHmac('sha256', password).update('site-gate-v1').digest('base64url')}`;
 }
 
+function glCookieValue(password) {
+  return `v1.${crypto.createHmac('sha256', password).update('galinsky-labs-gate-v1').digest('base64url')}`;
+}
+
 // Only a same-site relative path starting with a single "/"; anything else becomes "/".
 function safeNext(next) {
   if (typeof next !== 'string' || !next) return '/';
@@ -27,12 +37,65 @@ function safeNext(next) {
   return next;
 }
 
-function readCookie(header, name) {
+// Every value sent for a cookie name (a host-only and a Domain cookie can share a name).
+function readCookies(header, name) {
+  const out = [];
   for (const part of String(header || '').split(';')) {
     const i = part.indexOf('=');
-    if (i > -1 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+    if (i > 0 && part.slice(0, i).trim() === name) out.push(part.slice(i + 1).trim());
   }
-  return '';
+  return out;
+}
+
+const isGalinskyHost = (host) => {
+  const h = String(host || '').toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '');
+  return h === 'galinskylabs.com' || h.endsWith('.galinskylabs.com');
+};
+
+function glCookies(value, host) {
+  const base = `Path=/; Max-Age=${GL_MAX_AGE}; HttpOnly; Secure; SameSite=None`;
+  return [
+    `${GL_COOKIE}=${value}; ${base}${isGalinskyHost(host) ? '; Domain=galinskylabs.com' : ''}`,
+    `${GL_COOKIE_P}=${value}; ${base}; Partitioned`,
+  ];
+}
+
+// ---------------------------------------------------------------- framing
+// The site may be framed by the galinskylabs.com portfolio (env FRAME_ANCESTORS overrides the list).
+// On every response: drop X-Frame-Options; set frame-ancestors in each CSP (appending it when
+// missing) or, with no CSP at all, send `Content-Security-Policy: frame-ancestors <value>`.
+// Nothing else in a CSP is changed. Applied at writeHead, so it covers every response path.
+function withFrameAncestors(csp, value) {
+  let found = false;
+  const parts = String(csp).split(';').map((p) => p.trim()).filter(Boolean).map((p) => {
+    if (/^frame-ancestors(\s|$)/i.test(p)) { found = true; return `frame-ancestors ${value}`; }
+    return p;
+  });
+  if (!found) parts.push(`frame-ancestors ${value}`);
+  return parts.join('; ');
+}
+
+function applyFraming(res, value) {
+  if (res.__framingApplied) return;
+  res.__framingApplied = true;
+  const writeHead = res.writeHead;
+  res.writeHead = function framedWriteHead(statusCode, ...rest) {
+    // Headers given straight to writeHead() take precedence over setHeader(); merge them first.
+    let headers = rest.length && typeof rest[rest.length - 1] === 'object' ? rest.pop() : null;
+    if (Array.isArray(headers)) {
+      const flat = Array.isArray(headers[0]) ? headers.flat() : headers;
+      headers = {};
+      for (let i = 0; i + 1 < flat.length; i += 2) headers[flat[i]] = flat[i + 1];
+    }
+    if (headers && !this.headersSent) for (const [k, v] of Object.entries(headers)) if (v !== undefined) this.setHeader(k, v);
+    if (!this.headersSent) {
+      this.removeHeader('X-Frame-Options');
+      const csp = this.getHeader('Content-Security-Policy');
+      if (csp == null || csp === '') this.setHeader('Content-Security-Policy', `frame-ancestors ${value}`);
+      else this.setHeader('Content-Security-Policy', Array.isArray(csp) ? csp.map((c) => withFrameAncestors(c, value)) : withFrameAncestors(csp, value));
+    }
+    return writeHead.call(this, statusCode, ...rest);
+  };
 }
 
 function clientIp(req) {
@@ -84,9 +147,13 @@ function readBody(req, limit = 16 * 1024) {
   });
 }
 
-function createGate({ password = process.env.SITE_PASSWORD, siteName = 'site', healthPath = '/healthz', exempt = [], failDelayMs = FAIL_DELAY_MS } = {}) {
-  if (!password) return (req, res, next) => next();
+function createGate({ password = process.env.SITE_PASSWORD, siteName = 'site', healthPath = '/healthz', exempt = [], failDelayMs = FAIL_DELAY_MS, frameAncestors = process.env.FRAME_ANCESTORS } = {}) {
+  const ancestors = String(frameAncestors || '').trim() || DEFAULT_FRAME_ANCESTORS;
+  if (!password) return (req, res, next) => { applyFraming(res, ancestors); next(); };
   const expected = cookieValue(password);
+  const glExpected = glCookieValue(password);
+  const authorized = (header) => [GL_COOKIE, GL_COOKIE_P].some((n) => readCookies(header, n).some((v) => safeEqual(v, glExpected)))
+    || readCookies(header, COOKIE).some((v) => safeEqual(v, expected));
   const tries = new Map(); // ip -> { n, reset }
 
   const send = (res, status, headers, body) => {
@@ -114,7 +181,7 @@ function createGate({ password = process.env.SITE_PASSWORD, siteName = 'site', h
     const next = safeNext(form.get('next'));
     if (safeEqual(form.get('password') || '', password)) {
       return send(res, 303, {
-        'Set-Cookie': `${COOKIE}=${expected}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${MAX_AGE}`,
+        'Set-Cookie': glCookies(glExpected, req.headers.host),
         Location: next, 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow',
       }, '');
     }
@@ -123,6 +190,7 @@ function createGate({ password = process.env.SITE_PASSWORD, siteName = 'site', h
   }
 
   return function gate(req, res, next) {
+    applyFraming(res, ancestors);
     const url = req.originalUrl || req.url || '/';
     const qi = url.indexOf('?');
     const pathname = qi === -1 ? url : url.slice(0, qi);
@@ -136,8 +204,7 @@ function createGate({ password = process.env.SITE_PASSWORD, siteName = 'site', h
       return send(res, 405, { Allow: 'GET, HEAD, POST', 'Cache-Control': 'no-store' }, '');
     }
     if (exempt.some((rule) => rule(req, pathname))) return next();
-    const got = readCookie(req.headers.cookie, COOKIE);
-    if (got && safeEqual(got, expected)) return next();
+    if (authorized(req.headers.cookie)) return next();
     if (wantsHtml(req)) {
       return send(res, 303, { Location: `/__gate?next=${encodeURIComponent(safeNext(url))}`, 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow' }, '');
     }
@@ -145,4 +212,4 @@ function createGate({ password = process.env.SITE_PASSWORD, siteName = 'site', h
   };
 }
 
-module.exports = { createGate, safeNext, cookieValue };
+module.exports = { createGate, safeNext, cookieValue, glCookieValue, withFrameAncestors, DEFAULT_FRAME_ANCESTORS };
